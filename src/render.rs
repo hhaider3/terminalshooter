@@ -167,12 +167,12 @@ fn scene(frame: &mut Frame, game: &Game) {
         } else {
             Rgb(64, 108, 129)
         };
-        // Quantized bands give depth without changing every color on every step.
-        let light = 1.0 / (1.0 + (hit.distance * 0.4).floor() * 0.15);
+        // Smooth attenuation preserves depth as output resolution increases.
+        let light = 1.0 / (1.0 + hit.distance * 0.06);
         for y in 0..h {
             let yf = y as f32 + 0.5;
             let color = if yf < top {
-                let band = ((yf / horizon) * 8.0).floor() / 8.0;
+                let band = yf / horizon;
                 let sky = Rgb(7, 13, 27).mix(Rgb(42, 64, 77), band * band);
                 // Skyline is anchored to world bearing, not the screen.
                 let azimuth = game.player.angle + (camera_x * plane_scale).atan();
@@ -214,7 +214,7 @@ fn scene(frame: &mut Frame, game: &Game) {
                 } else {
                     Rgb(30, 42, 50)
                 };
-                base.scale(1.0 / (1.0 + (distance * 0.3).floor() * 0.18))
+                base.scale(1.0 / (1.0 + distance * 0.05))
             } else {
                 let v = ((yf - top) / size).clamp(0.0, 1.0);
                 let u = hit.texture;
@@ -245,7 +245,25 @@ fn scene(frame: &mut Frame, game: &Game) {
                 } else {
                     base
                 };
-                let panel = panel.scale(light);
+                let bevel = 0.82 + (1.0 - u) * 0.18 + (1.0 - v) * 0.12;
+                let detail = if size > 28.0 {
+                    let bolt = ((u - 0.12).abs().min((u - 0.88).abs()) / 0.018).powi(2)
+                        + ((v - 0.28).abs().min((v - 0.78).abs()) / 0.014).powi(2);
+                    if bolt < 1.0 {
+                        WHITE.scale(0.65)
+                    } else if (0.72..0.76).contains(&v) && (0.3..0.7).contains(&u) {
+                        if (u * 48.0).fract() < 0.35 {
+                            Rgb(18, 28, 35)
+                        } else {
+                            panel
+                        }
+                    } else {
+                        panel.scale(bevel)
+                    }
+                } else {
+                    panel.scale(bevel)
+                };
+                let panel = detail.scale(light);
                 if game.muzzle > 0.0 {
                     panel.mix(GOLD, (0.24 - hit.distance * 0.02).max(0.0))
                 } else {
@@ -306,6 +324,12 @@ fn scene(frame: &mut Frame, game: &Game) {
                 }
             }
         }
+        let stride =
+            if !pickup && game.enemies[index].windup == 0.0 && game.enemies[index].wake == 0.0 {
+                (game.time * 7.0 + index as f32).sin() * 0.18
+            } else {
+                0.0
+            };
         for x in (center - half).max(0)..=(center + half).min(w as i32 - 1) {
             if depth >= depths[x as usize] {
                 continue;
@@ -341,7 +365,7 @@ fn scene(frame: &mut Frame, game: &Game) {
                     if enemy.flash > 0.0 {
                         body = WHITE;
                     }
-                    enemy_pixel(u, v, body, enemy.kind, enemy.hp <= 0)
+                    enemy_pixel(u, v, body, enemy.kind, enemy.hp <= 0, stride, size >= 30)
                 };
                 if let Some(color) = color {
                     frame.pixel(x, y, color.fog(depth));
@@ -371,20 +395,15 @@ fn scene(frame: &mut Frame, game: &Game) {
     }
 }
 
-fn ink(mark: u8, body: Rgb, weapon: bool) -> Option<Rgb> {
-    match mark {
-        b's' => Some(Rgb(8, 17, 25)),
-        b'H' => Some(body.mix(WHITE, 0.42)),
-        b'a' | b'A' => Some(body),
-        b'D' => Some(body.scale(0.42)),
-        b'E' => Some(if weapon { GREEN } else { Rgb(255, 233, 165) }),
-        b'G' => Some(Rgb(127, 99, 78)),
-        b'g' => Some(Rgb(66, 57, 52)),
-        _ => None,
-    }
-}
-
-fn enemy_pixel(u: f32, v: f32, body: Rgb, kind: Kind, dead: bool) -> Option<Rgb> {
+fn enemy_pixel(
+    u: f32,
+    v: f32,
+    body: Rgb,
+    kind: Kind,
+    dead: bool,
+    stride: f32,
+    detail: bool,
+) -> Option<Rgb> {
     if dead {
         return if v > 0.87 && (0.1..0.9).contains(&u) {
             Some(body.scale(0.3))
@@ -392,20 +411,12 @@ fn enemy_pixel(u: f32, v: f32, body: Rgb, kind: Kind, dead: bool) -> Option<Rgb>
             None
         };
     }
-    let sprite = match kind {
-        Kind::Grunt => crate::art::GRUNT,
-        Kind::Runner => crate::art::RUNNER,
-        Kind::Brute => crate::art::BRUTE,
-    };
-    let row = sprite[(v * sprite.len() as f32) as usize % sprite.len()].as_bytes();
-    let x = (u * 19.0) as usize;
-    ink(row.get(x).copied().unwrap_or(b' '), body, false)
+    crate::art::enemy(u, v, body, kind, stride, detail)
 }
 
 fn weapon(frame: &mut Frame, game: &Game, scene_height: usize) {
-    let sprite = crate::art::SHOTGUN;
-    let height = (scene_height as f32 * 0.35).clamp(8.0, 32.0) as i32;
-    let width = height * 40 / sprite.len() as i32;
+    let height = (scene_height as f32 * 0.38).clamp(8.0, 72.0) as i32;
+    let width = height * 18 / 10;
     let reload = if game.player.reload > 0.0 {
         (std::f32::consts::PI * game.player.reload / RELOAD_TIME).sin()
     } else {
@@ -415,26 +426,44 @@ fn weapon(frame: &mut Frame, game: &Game, scene_height: usize) {
     let ox = frame.width as i32 / 2 + frame.width as i32 / 9 - width / 2;
     let oy = scene_height as i32 - height + recoil + (reload * height as f32 * 0.65) as i32;
     for y in 0..height {
-        let row = sprite[y as usize * sprite.len() / height as usize].as_bytes();
         for x in 0..width {
-            let mark = row
-                .get(x as usize * 40 / width as usize)
-                .copied()
-                .unwrap_or(b' ');
-            if let Some(color) = ink(mark, Rgb(94, 123, 139), true)
-                && oy + y < scene_height as i32
-            {
-                frame.pixel(ox + x, oy + y, color);
+            let mut sum = [0_u32; 3];
+            let mut coverage = 0;
+            for (dx, dy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+                if let Some(Rgb(r, g, b)) = crate::art::weapon(
+                    (x as f32 + dx) / width as f32,
+                    (y as f32 + dy) / height as f32,
+                    reload,
+                ) {
+                    sum[0] += r as u32;
+                    sum[1] += g as u32;
+                    sum[2] += b as u32;
+                    coverage += 1;
+                }
+            }
+            if coverage > 0 && oy + y < scene_height as i32 {
+                frame.shade(
+                    ox + x,
+                    oy + y,
+                    Rgb(
+                        (sum[0] / coverage) as u8,
+                        (sum[1] / coverage) as u8,
+                        (sum[2] / coverage) as u8,
+                    ),
+                    coverage as f32 / 4.0,
+                );
             }
         }
     }
+
     if game.muzzle > 0.0 {
-        let mx = ox + width / 2;
+        let mx = ox + (width as f32 * crate::art::MUZZLE.0) as i32;
+        let my = oy + (height as f32 * crate::art::MUZZLE.1) as i32;
         for y in -7_i32..2 {
             for x in -8_i32..=8 {
                 let r = x.abs() + (y + 2).abs();
                 if r < 6 || (y == -2 && x.abs() < 8) {
-                    frame.pixel(mx + x, oy + y, if r < 3 { WHITE } else { GOLD });
+                    frame.pixel(mx + x, my + y, if r < 3 { WHITE } else { GOLD });
                 }
             }
         }

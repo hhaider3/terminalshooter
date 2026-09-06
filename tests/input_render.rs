@@ -245,6 +245,26 @@ fn physical_holds_work_without_repeats_and_stop_independently_on_release() {
 }
 
 #[test]
+fn physical_state_catching_up_to_terminal_press_has_no_repeat_delay() {
+    for (letter, bit) in [('w', 1), ('a', 2), ('s', 4), ('d', 8), ('q', 16), ('e', 32)] {
+        let mut game = Game::new(1);
+        game.start();
+        let mut input = Input::with_key_state(1, false, Some(physical_key));
+        PHYSICAL_KEYS.with(|keys| keys.set(0));
+        input.handle(key(letter, KeyEventKind::Press), 0.0, &mut game);
+        PHYSICAL_KEYS.with(|keys| keys.set(bit));
+        // No repeated terminal events throughout the initial OS repeat delay.
+        for tick in 1..=120 {
+            let controls = input.controls(tick as f64 / 120.0);
+            assert!(controls.direction(0.0).length() + controls.turn.abs() > 0.9);
+        }
+        PHYSICAL_KEYS.with(|keys| keys.set(0));
+        let controls = input.controls(1.001);
+        assert_eq!(controls.direction(0.0).length() + controls.turn.abs(), 0.0);
+    }
+}
+
+#[test]
 fn fallback_repeats_sustain_movement_but_never_assume_an_initial_hold() {
     let mut game = Game::new(1);
     game.start();
@@ -412,6 +432,27 @@ fn menus_have_no_world_pixels_or_crosshair_and_fit_all_sizes() {
             assert!(frame.cells.iter().all(|cell| cell.glyph != '▀'));
             assert_eq!(frame.cells.len(), w * h);
             assert!(frame.plain().lines().all(|line| line.chars().count() == w));
+        }
+    }
+}
+
+#[test]
+fn detailed_weapon_keeps_crosshair_and_hud_clear_at_all_sizes() {
+    for (w, h) in [(40, 16), (120, 36), (160, 50), (220, 70)] {
+        for reloading in [false, true] {
+            let mut game = Game::new(1);
+            game.start();
+            game.player.reload = if reloading { 0.4 } else { 0.0 };
+            let frame = render::draw(&game, w, h, Stats::default());
+            let cross_y = h - 4;
+            let cross = frame.cells[cross_y / 2 * w + w / 2];
+            assert_eq!(if cross_y % 2 == 0 { cross.fg } else { cross.bg }, GREEN);
+            assert!(frame.plain().lines().nth(h - 4).unwrap().contains("HP 100"));
+            assert!(
+                frame.cells[(h - 4) * w..]
+                    .iter()
+                    .all(|cell| cell.glyph != '▀')
+            );
         }
     }
 }

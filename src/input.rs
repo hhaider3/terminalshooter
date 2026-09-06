@@ -54,8 +54,16 @@ impl Input {
     }
     pub fn controls(&mut self, now: f64) -> Controls {
         self.held.retain(|code, held| {
+            let physical = self.key_state.and_then(|read| read(*code));
             if held.native {
-                return self.key_state.and_then(|read| read(*code)) == Some(true);
+                return physical == Some(true);
+            }
+            // A terminal press can arrive before the native state reflects it.
+            // Confirm during the initial tap too, instead of waiting for the
+            // first OS repeat to get another chance to recognize a hold.
+            if held.expires >= now && physical == Some(true) {
+                held.native = true;
+                return true;
             }
             held.expires >= now
         });

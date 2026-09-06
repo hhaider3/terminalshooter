@@ -8,10 +8,18 @@ The arena has an industrial night setting: illuminated steel panels, hazard
 stripes, floor guide lights, a distant skyline, and a crescent moon. Armored enemy
 silhouettes, contact shadows, a shaded shotgun, and health/ammo indicators keep
 combat readable. Small terminals use a compact local minimap.
+Enemies and the shotgun are drawn procedurally at the output resolution, with
+curved armor, visor recesses, joints, a receding shotgun barrel, receiver bevels
+and grip detail. The shotgun is viewed along its barrel, with a support hand
+under the pump and the firing hand around the rear grip.
+Weapon edges are antialiased; larger viewports reveal more detail. Lighting and
+sky gradients are continuous, with fine panel details visible up close.
 
 ![Rust renderer preview](docs/images/rust-arena.png)
 
-*Renderer preview at 120×36 cells; terminal fonts and colors can differ.*
+*Renderer preview at 160×50 cells; terminal fonts and colors can differ.*
+
+[View the 220×70 renderer preview](docs/images/rust-arena-large.png).
 
 ## Play
 
@@ -92,6 +100,17 @@ tracking starts only after a physical press is confirmed; SSH and terminal
 multiplexers use terminal input. The physical mapping uses standard Mac WASD key
 positions; other layouts retain terminal input when the physical key does not match.
 
+If WASD or Q/E moves briefly, pauses, then repeats on macOS, run:
+
+```sh
+./play.sh --setup-keyboard
+```
+
+Allow your terminal app (or `terminalshooter` if listed) under **System Settings
+> Privacy & Security > Input Monitoring**, then fully quit and reopen the terminal.
+The setup command checks permission from that terminal, not the editor that built
+the game. Rebuilding alone does not grant access. Launch `./play.sh` again afterward.
+
 When neither release events nor native state are available, an isolated tap lasts
 at most 45 ms (about 0.17 map cells or 6 degrees). Repeating input uses a 100 ms
 timeout. The fallback does not assume a hold during the OS's initial repeat delay,
@@ -106,13 +125,16 @@ key repeat for shooting.
 ./play.sh --truecolor            # richer color
 ./play.sh --fps 30               # lower display update rate
 ./play.sh --large                # viewport up to 220x70
+./play.sh --compact              # previous 120x36 limit for slower terminals
 ./play.sh --no-mouse             # keyboard-only aiming
 ./play.sh --seed 7               # reproducible spawns
 ./play.sh --bench                # headless render/encoding benchmark
 ./play.sh --help
 ```
 
-Default: 60 display frames per second, with a viewport capped at 120x36 cells.
+Default: 60 display frames per second, with a viewport capped at 160x50 cells.
+The terminal must have enough cells: enlarge its window or reduce the font size
+to show more detail. `--large` raises the cap to 220x70; `--compact` uses 120x36.
 Minimum terminal size: 40x16. Shrinking below that size suspends gameplay.
 The simulation advances in fixed 120-Hz steps independently of rendering FPS,
 with a bounded catch-up interval after stalls.
@@ -161,7 +183,7 @@ or physically move the pointer.
 | `src/input.rs` | Terminal events, key holds, mouse input, control actions |
 | `src/keyboard.rs` | Local macOS state checks for received movement controls |
 | `src/render.rs` | Pixel/text composition, projection, sprites, HUD, ANSI differences |
-| `src/art.rs` | Authored enemy and weapon pixel silhouettes |
+| `src/art.rs` | Procedural enemy and weapon geometry, materials and surface detail |
 | `src/main.rs` | CLI, terminal lifecycle, signal cleanup, fixed-step loop, benchmark |
 | `src/pacing.rs` | Frame deadlines and recovery after output stalls |
 | `tests/` | Gameplay, input/rendering, and executable PTY checks |

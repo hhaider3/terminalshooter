@@ -21,10 +21,12 @@ Usage: terminalshooter [options]
   --256            Use 256 colors (less terminal output)
   --truecolor      Use 24-bit color
   --fps N          Target 15–120 FPS (default 60)
-  --large          Viewport up to 220x70 (default 120x36)
+  --large          Viewport up to 220x70 (default 160x50)
+  --compact        Viewport up to 120x36 for slower terminals
   --no-mouse       Start with mouse-look disabled
   --seed N         Reproducible enemy spawns
   --bench          Benchmark rendering; no terminal needed
+  --setup-keyboard  Enable macOS held-key access (run once in your terminal)
   --help           Show this help
 
 WASD move, Q/E turn, Space/click shotgun, F toggle-fire, X dodge,
@@ -37,6 +39,7 @@ struct Options {
     color: ColorMode,
     fps: u32,
     large: bool,
+    compact: bool,
     mouse: bool,
     seed: u64,
     bench: bool,
@@ -60,6 +63,7 @@ impl Options {
             color,
             fps: 60,
             large: false,
+            compact: false,
             mouse: true,
             seed: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -74,9 +78,20 @@ impl Options {
                     println!("{HELP}");
                     return Ok(None);
                 }
+                "--setup-keyboard" => {
+                    keyboard::setup();
+                    return Ok(None);
+                }
                 "--256" => result.color = ColorMode::Palette,
                 "--truecolor" => result.color = ColorMode::TrueColor,
-                "--large" => result.large = true,
+                "--large" => {
+                    result.large = true;
+                    result.compact = false;
+                }
+                "--compact" => {
+                    result.compact = true;
+                    result.large = false;
+                }
                 "--no-mouse" => result.mouse = false,
                 "--bench" => result.bench = true,
                 "--fps" => {
@@ -191,8 +206,11 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     }));
     let mut game = Game::new(options.seed);
     game.mouse = options.mouse;
-    let mut input =
-        Input::with_key_state(options.seed, terminal.enhanced, keyboard::local_key_state());
+    let native_keys = keyboard::local_key_state();
+    let mut input = Input::with_key_state(options.seed, terminal.enhanced, native_keys);
+    if !terminal.enhanced && native_keys.is_none() {
+        game.say("KEY REPEAT MODE // Run ./play.sh --setup-keyboard for smooth holds");
+    }
     let mut renderer = TerminalRenderer::new(options.color);
     let origin = Instant::now();
     let mut previous = origin;
@@ -276,7 +294,13 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         if game.sound && (game.shots_fired > shots_before || game.player.hp < health_before) {
             out.write_all(b"\x07")?;
         }
-        let (max_cols, max_rows) = if options.large { (220, 70) } else { (120, 36) };
+        let (max_cols, max_rows) = if options.compact {
+            (120, 36)
+        } else if options.large {
+            (220, 70)
+        } else {
+            (160, 50)
+        };
         let frame = render::draw(
             &game,
             cols.min(max_cols).max(1) as usize,

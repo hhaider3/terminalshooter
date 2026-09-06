@@ -22,6 +22,9 @@ struct Pty {
 }
 impl Pty {
     fn launch(enhanced: bool) -> Self {
+        Self::launch_with_options(enhanced, &[])
+    }
+    fn launch_with_options(enhanced: bool, options: &[&str]) -> Self {
         let (mut master, mut slave) = (0, 0);
         let mut size = libc::winsize {
             ws_row: 30,
@@ -55,6 +58,7 @@ impl Pty {
         let mut command = Command::new(env!("CARGO_BIN_EXE_terminalshooter"));
         command
             .args(["--seed", "7", "--256"])
+            .args(options)
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave.try_clone().unwrap()));
@@ -261,6 +265,31 @@ fn executable_controls_resize_and_restore_in_both_protocol_modes() {
         tty.send(b"\x1b[I");
         tty.pump(Duration::from_millis(100));
         assert!(tty.screen().contains("PAUSED"));
+        tty.send(b"\x03");
+        tty.assert_clean_exit();
+    }
+}
+
+#[test]
+fn viewport_options_use_the_expected_terminal_area() {
+    for (options, height) in [
+        (&[][..], 50),
+        (&["--compact"][..], 36),
+        (&["--large"][..], 70),
+    ] {
+        let mut tty = Pty::launch_with_options(false, options);
+        tty.wait_text("ENTER or CLICK");
+        tty.resize(220, 70);
+        tty.send(b"\r");
+        tty.wait_text("WAVE 1/5");
+        tty.pump(Duration::from_millis(100));
+        assert!(
+            tty.screen()
+                .lines()
+                .nth(height - 4)
+                .unwrap()
+                .contains("HP 100")
+        );
         tty.send(b"\x03");
         tty.assert_clean_exit();
     }
