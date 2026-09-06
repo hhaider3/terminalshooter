@@ -221,6 +221,7 @@ class Game:
         self.victory = False
         self.auto_fire = False
         self.mouse_enabled = True
+        self.mouse_status = 'ON'
         self.dash_cooldown = 0.0
         self.dash_time = 0.0
         self.dash_vector = (0.0, -1.0)
@@ -649,7 +650,7 @@ class Term:
         out = sys.stdout
         try:
             out.write("\x1b[?1049h\x1b[?7l\x1b[?25l")
-            out.write("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h")
+            out.write("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h")
             out.flush()
         except BaseException:
             self.__exit__()
@@ -659,7 +660,7 @@ class Term:
     def __exit__(self, *exc):
         try:
             out = sys.stdout
-            out.write("\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l")
+            out.write("\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?1004l")
             out.write("\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l")
             out.flush()
         except Exception:
@@ -725,6 +726,10 @@ class Term:
                 self.buf += data
         # parse what we have; keep incomplete tail buffered
         while self.buf:
+            if self.buf.startswith((b'\x1b[I', b'\x1b[O')):
+                keys.add('focus_in' if self.buf[2:3] == b'I' else 'focus_out')
+                self.buf = self.buf[3:]
+                continue
             # SGR mouse: ESC [ < Cb ; Cx ; Cy M/m
             m = re.match(rb'^\x1b\[<(\d+);(\d+);(\d+)([Mm])', self.buf)
             if m:
@@ -865,12 +870,16 @@ class Frame:
                 self.bot[y // 2][x] = col
 
 
-def render(g, cols, rows):
+def render(g, cols, rows, gameplay=True):
     hud = 4
     view_rows = max(8, rows - hud)
     W, H = cols, view_rows * 2
     g.view_height = H
     fr = Frame(cols, view_rows)
+    # Menu frames are composed independently. Never paint a crosshair, weapon,
+    # minimap or flash under text, even transiently while the terminal refreshes.
+    if not gameplay or g.paused or g.big_map or g.game_over or g.victory:
+        return fr, [MAX_DEPTH] * W, H // 2
     p = g.player
     eff_fov = FOV + g.fov_kick
     shx = int((random.random() - 0.5) * g.shake * 6)
@@ -1197,6 +1206,8 @@ def hud_lines(term, g, cols):
         objective = f" WAVE CLEAR  |  Next wave in {math.ceil(g.intermission)}  |  +25 HP"
     dash = "READY" if g.dash_cooldown <= 0 else f"{g.dash_cooldown:.1f}s"
     status = f" X dodge {dash} | F fire {'ON' if g.auto_fire else 'OFF'} | R reload"
+    if cols >= 90:
+        status += f" | Mouse {g.mouse_status}"
     message = g.msg if g.msg_t > 0 else "Keep moving. Yellow enemy = attack incoming."
     if 0 < len(alive) <= 2 and g.msg_t <= 0:
         enemy = min(alive, key=lambda e: math.hypot(e['x'] - p['x'], e['y'] - p['y']))
@@ -1289,6 +1300,13 @@ TITLE = [
 ]
 
 
+def toggle_mouse_look(g):
+    """Toggle ordinary terminal mouse aiming without moving the desktop pointer."""
+    g.mouse_enabled = not g.mouse_enabled
+    g.mouse_status = 'ON' if g.mouse_enabled else 'OFF'
+    g.say(f"Terminal mouse {g.mouse_status} | Q/E turn")
+
+
 def main():
     with Term() as term:
         g = Game()
@@ -1299,6 +1317,7 @@ def main():
         last_shot = 0.0
         quit_flag = False
         previous_size = None
+        previous_output = None
 
         while not quit_flag:
             now = time.monotonic()
@@ -1324,13 +1343,26 @@ def main():
                 sys.stdout.flush()
                 continue
             # A bounded viewport avoids overwhelming terminal text rendering.
+            terminal_cols, terminal_rows = cols, rows
             max_cols, max_rows = (220, 70) if '--large' in sys.argv else (120, 36)
             cols, rows = min(cols, max_cols), min(rows, max_rows)
             if previous_size != (cols, rows):
+                last_mouse = None
                 sys.stdout.write("\x1b[2J")
                 previous_size = (cols, rows)
+                previous_output = None
 
             keys, mev = term.poll()
+            if 'focus_out' in keys:
+                left_held = False
+                g.auto_fire = False
+                g.held.clear()
+                last_mouse = None
+                if state == 'play' and not (g.game_over or g.victory):
+                    g.paused = True
+                mev = []
+                keys = keys & {'esc', 'ctrlc'}
+            keys.discard('focus_in')
             if 'ctrlc' in keys:
                 break
             if 'esc' in keys:
@@ -1353,6 +1385,10 @@ def main():
                             mouse_look(g, dx, dy * 0.5)
                     last_mouse = (cx, cy)
                 elif tag == 'lpress':
+                    # Fullscreen can be much larger than the bounded viewport.
+                    # Accept shooting clicks anywhere inside the terminal.
+                    if not (1 <= ev[1] <= terminal_cols and 1 <= ev[2] <= terminal_rows):
+                        continue
                     last_mouse = (ev[1], ev[2])
                     if state == 'title':
                         state = 'play'
@@ -1384,6 +1420,7 @@ def main():
                 g.say(f"Sound {'ON' if g.beep else 'OFF'}")
             if 'm' in keys or 'M' in keys:
                 if 'M' in keys:
+                    last_mouse = None
                     g.big_map = not g.big_map
                     g.auto_fire = False
                     left_held = False
@@ -1403,6 +1440,7 @@ def main():
                 g.say(f"Mouse sens {g.mouse_sens:.3f}")
             if 'r' in keys or 'R' in keys:
                 if g.game_over or g.victory:
+                    last_mouse = None
                     g = Game()
                     left_held = False
                 else:
@@ -1417,9 +1455,9 @@ def main():
             if keys & {'f', 'F'} and not (g.paused or g.big_map or g.game_over or g.victory or g.intermission):
                 g.auto_fire = not g.auto_fire
             if keys & {'l', 'L'}:
-                g.mouse_enabled = not g.mouse_enabled
+                toggle_mouse_look(g)
                 last_mouse = None
-                g.say(f"Mouse look {'ON' if g.mouse_enabled else 'OFF'}")
+                left_held = False
 
             # held-key smoothing for movement
             for k in keys:
@@ -1497,7 +1535,8 @@ def main():
                 sys.stdout.write("\a")
 
             # --- draw ---
-            fr, _, horizon = render(g, cols, rows)
+            g.mouse_status = 'ON' if g.mouse_enabled else 'OFF'
+            fr, _, horizon = render(g, cols, rows, gameplay=state == 'play')
             frame = serialize(term, fr)
             out = [frame]
             # HUD
@@ -1531,8 +1570,11 @@ def main():
                 y0 = rows // 2 - 1
                 for i, ln in enumerate(lines):
                     out.append(f"\x1b[{y0 + i};{(cols - len(ln)) // 2}H\x1b[0m{term.fg((255, 70, 70))}{ln}\x1b[0m")
-            sys.stdout.write("".join(out))
-            sys.stdout.flush()
+            output = "".join(out)
+            if output != previous_output:
+                sys.stdout.write(output)
+                sys.stdout.flush()
+                previous_output = output
 
             elapsed = time.monotonic() - now
             time.sleep(max(0, 1 / 60 - elapsed))

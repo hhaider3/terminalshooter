@@ -1,91 +1,161 @@
-# TERMINAL // BREACH
+# TERMINAL // BREACH — Rust edition
 
-A short arena FPS for your terminal. Clear five waves with a spread shotgun,
-keep moving around cover, and dodge when enemies wind up an attack.
-Python standard library only; macOS or Linux (WSL on Windows).
+A five-wave arena FPS played in a terminal. The game, renderer, input handling,
+and terminal lifecycle are implemented in Rust. The executable has no Python
+runtime dependency.
+
+## Play
+
+This checkout has a project-local Rust toolchain installed:
 
 ```bash
-python3 fps_hd.py
+./play.sh
 ```
 
-For a first run: **WASD** moves, **Q/E** turns, **F** toggles continuous fire,
-and **X** dodges. You can play entirely on the keyboard. Aim toward a group,
-close the distance for more damage, and keep an escape route around a pillar.
+The launcher builds the optimized executable and starts it. On another machine,
+install [Rust](https://rustup.rs/) first, then use the launcher or Cargo:
 
-## The run
+```bash
+cargo run --release --locked
+```
 
-- Five waves, then a victory screen. Enemy health stays fixed; later waves
-  introduce more enemies and different combinations.
-- The shotgun hits multiple enemies in its spread. A centered close shot
-  kills a red grunt. Purple brutes need several shots.
-- Red grunts pursue steadily. Gold runners close in quickly. Purple brutes
-  are slow, tough, and hit hard. Cyan enemies are still spawning and harmless.
-- Enemies turn yellow while winding up an attack. Move out of reach, dodge,
-  or interrupt them with a shot. Damage only lands after the windup.
-- Dodge follows your current movement direction, or forward if stationary.
-  It has a 1.8-second cooldown and cannot pass through walls.
-- Kills within three seconds build a score multiplier up to 5x. Getting hit
-  breaks the streak. A white crosshair confirms a hit.
-- A four-second break between waves restores 25 HP and refills your shells.
-  Continuous fire switches off between waves. Green pickups heal; amber
-  pickups supply ammo. Two medkits start in the side lanes.
-- The HUD shows remaining enemies and points toward the last two when no
-  other message is displayed. The green minimap dot is your cell; the white
-  tick is your facing direction.
+After building, run `./target/release/terminalshooter` directly if you prefer.
+On Windows, use `cargo run --release --locked` or
+`target\release\terminalshooter.exe`. macOS is tested locally. Linux and Windows
+are supported by the terminal library but have not been verified on this machine.
+
+## First run
+
+Press **Enter** to deploy. Use **WASD** to move, **Q/E** to turn, **F** to toggle
+continuous fire, and **X** to dodge. Keyboard-only play is supported. Close the
+distance for more shotgun damage and use the pillars to separate enemies.
+
+- Red grunts are steady pursuers. Gold runners are fast. Purple brutes are tough.
+- Cyan enemies are spawning and harmless. Yellow enemies are winding up an attack.
+- Shoot to interrupt an attack, move out of reach, or dodge. Dodge follows your
+  movement direction, or forward when stationary, and has a 1.8-second cooldown.
+- The shotgun hits enemies across its spread. A centered close shot kills a grunt.
+- Quick kills build a score multiplier up to 5x. Taking damage breaks the streak.
+- Between waves, a four-second break restores 25 HP and resupplies shells.
+- Green pickups heal; amber pickups provide ammo. Two medkits start in the side lanes.
+- Clear all five waves to win. The HUD points toward the last two enemies.
 
 ## Controls
 
-| Key | Action |
+| Input | Action |
 |---|---|
 | W / Up, S / Down | Forward, backward |
 | A / D | Strafe |
 | Q / E, Left / Right | Turn |
 | Shift+W | Sprint |
-| Mouse movement | Horizontal aim |
-| Space / left click | Shotgun; hold left mouse to keep firing |
+| Space / left mouse | Shoot on press; hold left mouse for continuous fire and automatic reload |
 | F | Toggle continuous fire |
-| R / right click | Reload |
-| X | Dodge |
-| L | Toggle mouse look |
-| `[` / `]`, mouse wheel | Adjust sensitivity |
+| R / right mouse | Reload |
+| X | Dodge in your movement direction |
+| Mouse movement | Horizontal aim, when the terminal reports motion |
+| L | Toggle terminal mouse-look; reset its movement baseline |
+| `[` / `]` / mouse wheel | Adjust sensitivity |
 | M / Shift+M | Minimap / tactical map |
-| P | Pause |
-| H | Control reminder |
+| H | Field manual |
+| P / Escape | Pause/resume; close an overlay |
 | B | Toggle terminal beeps |
-| R after a run | Restart |
-| Escape / Ctrl-C | Quit; Escape closes the tactical map first |
+| R / Enter after a run | Restart, preserving control preferences |
+| Ctrl-C | Quit from any screen |
 
-The tactical map pauses combat. Pause, death, victory, and wave completion
-switch off continuous fire. Mouse aiming stays level so vertical drift does
-not pull your aim off enemies.
+The title screen, menus, and tactical map freeze simulation. Focus loss pauses
+the game and clears held input and automatic firing. The minimap's green dot
+marks the player's containing cell; its white tick shows the facing direction.
 
-## Terminal performance
+## Terminal input limitations
 
-The game targets 60 FPS with a default viewport of up to **120×36** terminal
-cells. Larger terminal windows leave spare space instead of increasing the
-rendering workload. Minimum size: **40×16**. Below that size, gameplay stops
-until the window is large enough again.
+The Rust version uses [Crossterm](https://docs.rs/crossterm/0.29.0/crossterm/event/index.html)
+for key, mouse, focus, and resize events. It does **not** attempt desktop pointer
+locking. The experimental pointer-lock helper has also been removed from Python.
+Mouse movement stops at window edges; Q/E can always rotate the camera. `L` toggles
+mouse-look, not pointer capture.
+
+Compatible terminals use key press/release events through the keyboard enhancement
+protocol. In local macOS sessions, movement keys received by the game can also use
+[Quartz key-state checks](https://developer.apple.com/documentation/coregraphics/cgeventsource/keystate(_:key:))
+to keep moving while held and stop on release, including simultaneous WASD keys.
+This checks only received game controls and installs no keyboard event tap. Native
+tracking starts only after a physical press is confirmed; SSH and terminal
+multiplexers use terminal input. The physical mapping uses standard Mac WASD key
+positions; other layouts retain terminal input when the physical key does not match.
+
+When neither release events nor native state are available, an isolated tap lasts
+at most 45 ms (about 0.17 map cells or 6 degrees). Repeating input uses a 100 ms
+timeout. The fallback does not assume a hold during the OS's initial repeat delay,
+so movement can pause before repeats begin. Native state or key-release support
+is needed for both precise taps and uninterrupted holds. `F` avoids relying on
+key repeat for shooting.
+
+## Performance and options
 
 ```bash
-python3 fps_hd.py --256        # smaller output, useful for slower terminals
-python3 fps_hd.py --truecolor  # richer color
-python3 fps_hd.py --large      # allow up to 220×70; higher rendering cost
+./play.sh --256                  # reduced terminal output
+./play.sh --truecolor            # richer color
+./play.sh --fps 30               # lower display update rate
+./play.sh --large                # viewport up to 220x70
+./play.sh --no-mouse             # keyboard-only aiming
+./play.sh --seed 7               # reproducible spawns
+./play.sh --bench                # headless render/encoding benchmark
+./play.sh --help
 ```
 
-Color mode is detected automatically. Actual frame rate depends on your
-terminal, window size, and machine. Standard terminals lack key-release
-reports, so movement uses a short timeout and depends on OS key repeat.
-The F toggle avoids relying on repeat for firing. Mouse motion stops at the
-window edges; Q/E can always turn you around. Terminal modes are restored
-when you exit.
+Default: 60 display frames per second, with a viewport capped at 120x36 cells.
+Minimum terminal size: 40x16. Shrinking below that size suspends gameplay.
+The simulation advances in fixed 120-Hz steps independently of rendering FPS,
+with a bounded catch-up interval after stalls.
+Frame deadlines compensate for late OS wakeups instead of accumulating sleep
+delay. Mouse presses fire immediately; quick Space taps survive until the next
+simulation step.
 
-## Checks
+The renderer compares final, encoded cells and sends only changes. Text, menus,
+and graphics are composed before output; synchronized updates are used where the
+terminal supports them. Static menus send nothing after the first frame.
+256-color comparisons happen after palette conversion, avoiding redundant colors.
+The terminal still determines visible FPS: `--bench` excludes terminal drawing,
+output latency, and human playtesting.
+
+## Development and checks
+
+With Rust on PATH:
 
 ```bash
-python3 fps_hd.py --test
-python3 -m unittest -v
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo build --release --locked
+cargo run --release --locked -- --bench --256
 ```
 
-Tests cover rendering and input, minimap coordinates, enemy navigation,
-shotgun spread, attack interruption and dodging, cover collision, cooldowns,
-wave resupply, and victory.
+For the isolated toolchain installed in this checkout, run this once in your shell:
+
+```bash
+export RUSTUP_HOME="$PWD/.tools/rustup"
+export CARGO_HOME="$PWD/.tools/cargo"
+export PATH="$CARGO_HOME/bin:$PATH"
+```
+
+Tests cover complete runs, collision/navigation, shotgun spread, dodging, ammo,
+pause/restart, keyboard release/fallback, `L`, minimap coordinates, menu composition,
+and incremental output. Unix tests launch the real executable through a
+pseudo-terminal to exercise protocol negotiation, input, resizing, focus loss,
+Ctrl-C, SIGTERM, and mode restoration. They do not drive the desktop Terminal GUI
+or physically move the pointer.
+
+| File | Responsibility |
+|---|---|
+| `src/world.rs` | Map, collision, DDA rays, pathfinding, seeded randomness |
+| `src/game.rs` | Player, enemies, combat, pickups, waves, game states |
+| `src/input.rs` | Terminal events, key holds, mouse input, control actions |
+| `src/keyboard.rs` | Local macOS state checks for received movement controls |
+| `src/render.rs` | Pixel/text composition, projection, sprites, HUD, ANSI differences |
+| `src/main.rs` | CLI, terminal lifecycle, signal cleanup, fixed-step loop, benchmark |
+| `src/pacing.rs` | Frame deadlines and recovery after output stalls |
+| `tests/` | Gameplay, input/rendering, and executable PTY checks |
+
+The existing `fps_hd.py` and `test_fps.py` remain available
+as the previous Python version. They are not used by the Rust game. Its historical
+documentation is in [docs/PYTHON_VERSION.md](docs/PYTHON_VERSION.md).

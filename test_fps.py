@@ -227,6 +227,12 @@ class GameTests(unittest.TestCase):
 
 
 class InputTests(unittest.TestCase):
+    def test_focus_reports_are_not_gameplay_keys(self):
+        term = fps.Term.__new__(fps.Term)
+        term.fd, term.buf = -1, b'\x1b[I\x1b[O'
+        with patch.object(fps.select, 'select', return_value=([], [], [])):
+            self.assertEqual(term.poll(), ({'focus_in', 'focus_out'}, []))
+
     def test_split_mouse_and_unknown_csi_do_not_swallow_keys(self):
         term = fps.Term.__new__(fps.Term)
         term.fd, term.buf = -1, b''
@@ -241,6 +247,40 @@ class InputTests(unittest.TestCase):
     def test_modified_mouse_buttons(self):
         self.assertEqual(fps.Term._decode_mouse(4, 2, 3, True), [('lpress', 2, 3)])
         self.assertEqual(fps.Term._decode_mouse(48, 2, 3, True), [('drag', 2, 3)])
+
+
+class MenuTests(unittest.TestCase):
+    def test_menu_frames_never_contain_world_or_crosshair(self):
+        for state in ('title', 'paused', 'big_map', 'game_over', 'victory'):
+            with self.subTest(state=state):
+                game = fps.Game()
+                game.muzzle = .1
+                game.hit_marker = .1
+                game.spawn_hit_particles()
+                if state != 'title':
+                    setattr(game, state, True)
+                frame, _, _ = fps.render(game, 80, 24, gameplay=state != 'title')
+                self.assertTrue(all(color == fps.BG for row in frame.top + frame.bot for color in row))
+
+    def test_gameplay_crosshair_returns_after_pause(self):
+        game = fps.Game()
+        game.paused = True
+        fps.render(game, 80, 24)
+        game.paused = False
+        frame, _, _ = fps.render(game, 80, 24)
+        self.assertEqual(frame.top[10][40], fps.CROSS)
+
+
+class MouseLookTests(unittest.TestCase):
+    def test_l_toggles_terminal_aiming(self):
+        game = fps.Game()
+        self.assertTrue(game.mouse_enabled)
+        fps.toggle_mouse_look(game)
+        self.assertFalse(game.mouse_enabled)
+        self.assertEqual(game.mouse_status, 'OFF')
+        fps.toggle_mouse_look(game)
+        self.assertTrue(game.mouse_enabled)
+        self.assertEqual(game.mouse_status, 'ON')
 
 
 if __name__ == '__main__':
