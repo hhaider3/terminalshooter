@@ -417,6 +417,16 @@ fn menus_have_no_world_pixels_or_crosshair_and_fit_all_sizes() {
 }
 
 #[test]
+fn compact_minimap_keeps_the_aiming_point_clear() {
+    let mut game = Game::new(1);
+    game.start();
+    let frame = render::draw(&game, 40, 16, Stats::default());
+    assert_eq!(frame.cells[6 * 40 + 20].fg, GREEN);
+    // The cropped map still marks the player's containing cell.
+    assert_eq!(frame.cells[4 * 40 + 6].fg, GREEN);
+}
+
+#[test]
 fn minimap_uses_containing_cell_and_never_rounds_into_cover() {
     let mut game = Game::new(1);
     game.start();

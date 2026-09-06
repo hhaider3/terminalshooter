@@ -4,6 +4,15 @@ A five-wave arena FPS played in a terminal. The game, renderer, input handling,
 and terminal lifecycle are implemented in Rust. The executable has no Python
 runtime dependency.
 
+The arena has an industrial night setting: illuminated steel panels, hazard
+stripes, floor guide lights, a distant skyline, and a crescent moon. Armored enemy
+silhouettes, contact shadows, a shaded shotgun, and health/ammo indicators keep
+combat readable. Small terminals use a compact local minimap.
+
+![Rust renderer preview](docs/images/rust-arena.png)
+
+*Renderer preview at 120×36 cells; terminal fonts and colors can differ.*
+
 ## Play
 
 This checkout has a project-local Rust toolchain installed:
@@ -152,6 +161,7 @@ or physically move the pointer.
 | `src/input.rs` | Terminal events, key holds, mouse input, control actions |
 | `src/keyboard.rs` | Local macOS state checks for received movement controls |
 | `src/render.rs` | Pixel/text composition, projection, sprites, HUD, ANSI differences |
+| `src/art.rs` | Authored enemy and weapon pixel silhouettes |
 | `src/main.rs` | CLI, terminal lifecycle, signal cleanup, fixed-step loop, benchmark |
 | `src/pacing.rs` | Frame deadlines and recovery after output stalls |
 | `tests/` | Gameplay, input/rendering, and executable PTY checks |

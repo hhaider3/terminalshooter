@@ -90,6 +90,13 @@ impl Frame {
             };
         }
     }
+    fn shade(&mut self, x: i32, y: i32, color: Rgb, amount: f32) {
+        if x >= 0 && y >= 0 && x < self.width as i32 && y < self.height as i32 * 2 {
+            let cell = self.cells[y as usize / 2 * self.width + x as usize];
+            let old = if y % 2 == 0 { cell.fg } else { cell.bg };
+            self.pixel(x, y, old.mix(color, amount));
+        }
+    }
     fn center(&mut self, y: usize, text: &str, color: Rgb) {
         self.text(
             self.width.saturating_sub(text.chars().count()) / 2,
@@ -138,6 +145,9 @@ fn scene(frame: &mut Frame, game: &Game) {
     let plane_scale = (fov / 2.0).tan();
     let forward = Vec2::facing(game.player.angle);
     let side = Vec2::new(-forward.y, forward.x);
+    let moon = Vec2::facing(-1.25);
+    let moon_depth = moon.dot(forward);
+    let moon_x = w as f32 * 0.5 * (1.0 + moon.dot(side) / (moon_depth * plane_scale));
     let mut depths = vec![world::FAR; w];
     for (x, depth) in depths.iter_mut().enumerate() {
         let camera_x = 2.0 * (x as f32 + 0.5) / w as f32 - 1.0;
@@ -147,46 +157,99 @@ fn scene(frame: &mut Frame, game: &Game) {
         let size = h as f32 / hit.distance;
         let top = horizon - size / 2.0;
         let bottom = horizon + size / 2.0;
-        let wall_color = if hit.side {
-            Rgb(79, 110, 122)
+        let wall_point = game.player.pos + ray * hit.distance;
+        let exterior = wall_point.x < 1.01
+            || wall_point.x > 17.99
+            || wall_point.y < 1.01
+            || wall_point.y > 13.99;
+        let base = if hit.side {
+            Rgb(31, 79, 95)
         } else {
-            Rgb(118, 149, 156)
+            Rgb(64, 108, 129)
         };
-        let wall_color = if game.muzzle > 0.0 {
-            wall_color.mix(GOLD, (0.2 - hit.distance * 0.015).max(0.0))
-        } else {
-            wall_color
-        };
-        let wall_color = wall_color.fog(hit.distance);
+        // Quantized bands give depth without changing every color on every step.
+        let light = 1.0 / (1.0 + (hit.distance * 0.4).floor() * 0.15);
         for y in 0..h {
             let yf = y as f32 + 0.5;
             let color = if yf < top {
-                let sky = Rgb(5, 9, 25).mix(Rgb(90, 47, 42), (yf / horizon).powi(3));
-                if y < h / 4 && (x * 31 + y * 17).is_multiple_of(157) {
-                    Rgb(135, 160, 185)
+                let band = ((yf / horizon) * 8.0).floor() / 8.0;
+                let sky = Rgb(7, 13, 27).mix(Rgb(42, 64, 77), band * band);
+                // Skyline is anchored to world bearing, not the screen.
+                let azimuth = game.player.angle + (camera_x * plane_scale).atan();
+                let sector = ((azimuth + std::f32::consts::TAU) * 55.0) as i32;
+                let tower = ((sector / 4).rem_euclid(7) * 3 + 5) as f32;
+                let mx = x as f32 - moon_x;
+                let my = yf - h as f32 * 0.16;
+                let radius = h as f32 * 0.065;
+                if moon_depth > 0.2 && mx * mx + my * my < radius * radius {
+                    if (mx + radius * 0.5).powi(2) + (my - radius * 0.2).powi(2) < radius * radius {
+                        Rgb(33, 41, 63)
+                    } else {
+                        Rgb(146, 161, 190)
+                    }
+                } else if yf > horizon - tower && yf > horizon * 0.48 {
+                    if sector.rem_euclid(4) == 1 && y % 4 == 1 {
+                        Rgb(68, 103, 112)
+                    } else {
+                        Rgb(14, 25, 36)
+                    }
                 } else {
                     sky
                 }
             } else if yf >= bottom {
                 let distance = h as f32 * 0.5 / (yf - horizon).max(1.0);
                 let pos = game.player.pos + ray * distance;
-                let checker = ((pos.x.floor() as i32) + (pos.y.floor() as i32)) & 1 == 0;
-                let base = if checker {
-                    Rgb(51, 58, 62)
+                let fx = pos.x.rem_euclid(1.0);
+                let fy = pos.y.rem_euclid(1.0);
+                let seam = fx < 0.025 || fy < 0.025;
+                let lane = (pos.x - 9.5).abs();
+                let base = if (lane - 1.6).abs() < 0.045 {
+                    Rgb(45, 148, 156)
+                } else if lane < 0.065 && pos.y.rem_euclid(2.0) < 0.7 {
+                    Rgb(172, 133, 65)
+                } else if seam {
+                    Rgb(15, 25, 32)
+                } else if (pos.x.floor() as i32 + pos.y.floor() as i32) & 1 == 0 {
+                    Rgb(35, 48, 55)
                 } else {
-                    Rgb(40, 47, 53)
+                    Rgb(30, 42, 50)
                 };
-                base.fog(distance)
+                base.scale(1.0 / (1.0 + (distance * 0.3).floor() * 0.18))
             } else {
                 let v = ((yf - top) / size).clamp(0.0, 1.0);
-                let brick = v * 7.0;
-                let u = hit.texture * 5.0 + if brick as i32 % 2 == 0 { 0.5 } else { 0.0 };
-                if v < 0.035 {
-                    Rgb(195, 115, 55).fog(hit.distance)
-                } else if brick.fract() < 0.07 || u.fract() < 0.06 {
-                    wall_color.scale(0.62)
+                let u = hit.texture;
+                let panel = if v < 0.045 || (0.22..0.25).contains(&v) {
+                    Rgb(14, 25, 34)
+                } else if (0.06..0.10).contains(&v) && (0.12..0.88).contains(&u) {
+                    if exterior {
+                        Rgb(62, 176, 180)
+                    } else {
+                        Rgb(235, 160, 66)
+                    }
+                } else if v > 0.86 && !exterior {
+                    if ((u * 7.0 + v * 5.0).floor() as i32) & 1 == 0 {
+                        Rgb(185, 129, 48)
+                    } else {
+                        Rgb(26, 32, 37)
+                    }
+                } else if !(0.035..=0.965).contains(&u) {
+                    Rgb(20, 33, 44)
+                } else if u < 0.075 {
+                    base.scale(1.4)
+                } else if (0.33..0.65).contains(&v) && (0.25..0.75).contains(&u) {
+                    if (v * 30.0).fract() < 0.45 {
+                        Rgb(13, 24, 32)
+                    } else {
+                        base.scale(0.75)
+                    }
                 } else {
-                    wall_color
+                    base
+                };
+                let panel = panel.scale(light);
+                if game.muzzle > 0.0 {
+                    panel.mix(GOLD, (0.24 - hit.distance * 0.02).max(0.0))
+                } else {
+                    panel
                 }
             };
             frame.pixel(x as i32, y as i32, color);
@@ -217,9 +280,32 @@ fn scene(frame: &mut Frame, game: &Game) {
         if size < 2 {
             continue;
         }
-        let half = (size / 2).max(1);
+        let aspect = if pickup {
+            0.5
+        } else {
+            match game.enemies[index].kind {
+                Kind::Brute => 0.48,
+                Kind::Runner => 0.32,
+                Kind::Grunt => 0.40,
+            }
+        };
+        let half = (size as f32 * aspect).max(1.0) as i32;
         let bottom = (horizon + h as f32 / depth / 2.0) as i32;
         let top = bottom - size;
+        // Contact shadows anchor sprites to the floor, with wall occlusion.
+        let radius = (size / 10).max(1);
+        for x in (center - half).max(0)..=(center + half).min(w as i32 - 1) {
+            if depth >= depths[x as usize] {
+                continue;
+            }
+            for y in (bottom - radius).max(0)..=(bottom + radius).min(h as i32 - 1) {
+                let ellipse = ((x - center) as f32 / half as f32).powi(2)
+                    + ((y - bottom) as f32 / radius as f32).powi(2);
+                if ellipse < 1.0 {
+                    frame.shade(x, y, BG, 0.65);
+                }
+            }
+        }
         for x in (center - half).max(0)..=(center + half).min(w as i32 - 1) {
             if depth >= depths[x as usize] {
                 continue;
@@ -255,7 +341,7 @@ fn scene(frame: &mut Frame, game: &Game) {
                     if enemy.flash > 0.0 {
                         body = WHITE;
                     }
-                    demon_pixel(u, v, game.time, body, enemy.hp <= 0)
+                    enemy_pixel(u, v, body, enemy.kind, enemy.hp <= 0)
                 };
                 if let Some(color) = color {
                     frame.pixel(x, y, color.fog(depth));
@@ -263,41 +349,9 @@ fn scene(frame: &mut Frame, game: &Game) {
             }
         }
     }
-    // Weapon recoil is independent from the camera and aiming point.
     let cx = w as i32 / 2;
     let cy = h as i32 / 2;
-    let recoil = (game.muzzle / 0.07 * 2.0) as i32;
-    let reload_drop = if game.player.reload > 0.0 { 4 } else { 0 };
-    let gun_top = h as i32 - 12 + recoil + reload_drop;
-    for y in gun_top.max(cy + 6)..h as i32 {
-        let dy = y - gun_top;
-        let half = if dy < 5 {
-            2
-        } else if dy < 9 {
-            7
-        } else {
-            4
-        };
-        for x in cx - half..=cx + half {
-            let color = if dy < 5 {
-                if x == cx { DIM } else { WHITE.scale(0.7) }
-            } else if dy < 9 {
-                Rgb(114, 81, 43)
-            } else {
-                Rgb(53, 43, 36)
-            };
-            frame.pixel(x, y, color);
-        }
-    }
-    if game.muzzle > 0.0 {
-        for y in gun_top - 5..gun_top {
-            for x in cx - 3..=cx + 3 {
-                if (x - cx).abs() + (y - gun_top + 2).abs() < 4 {
-                    frame.pixel(x, y, GOLD);
-                }
-            }
-        }
-    }
+    weapon(frame, game, h);
     let cross = if game.hit > 0.0 { WHITE } else { GREEN };
     for (dx, dy) in [(-3, 0), (3, 0), (0, -3), (0, 3), (0, 0)] {
         frame.pixel(cx + dx, cy + dy, cross);
@@ -317,49 +371,92 @@ fn scene(frame: &mut Frame, game: &Game) {
     }
 }
 
-fn demon_pixel(u: f32, v: f32, time: f32, body: Rgb, dead: bool) -> Option<Rgb> {
+fn ink(mark: u8, body: Rgb, weapon: bool) -> Option<Rgb> {
+    match mark {
+        b's' => Some(Rgb(8, 17, 25)),
+        b'H' => Some(body.mix(WHITE, 0.42)),
+        b'a' | b'A' => Some(body),
+        b'D' => Some(body.scale(0.42)),
+        b'E' => Some(if weapon { GREEN } else { Rgb(255, 233, 165) }),
+        b'G' => Some(Rgb(127, 99, 78)),
+        b'g' => Some(Rgb(66, 57, 52)),
+        _ => None,
+    }
+}
+
+fn enemy_pixel(u: f32, v: f32, body: Rgb, kind: Kind, dead: bool) -> Option<Rgb> {
     if dead {
-        return if v > 0.8 && u > 0.15 && u < 0.85 {
-            Some(body.scale(0.4))
+        return if v > 0.87 && (0.1..0.9).contains(&u) {
+            Some(body.scale(0.3))
         } else {
             None
         };
     }
-    if v < 0.28 {
-        if v < 0.12 && ((0.23..0.33).contains(&u) || (0.67..0.77).contains(&u)) {
-            return Some(body);
-        }
-        if !(0.31..0.69).contains(&u) || v < 0.08 {
-            return None;
-        }
-        if (0.14..0.21).contains(&v) && ((0.35..0.43).contains(&u) || (0.57..0.65).contains(&u)) {
-            return Some(GOLD);
-        }
-        return Some(body);
-    }
-    if v < 0.66 {
-        return if (0.12..0.88).contains(&u) {
-            Some(body.scale(if (0.3..0.7).contains(&u) { 1.0 } else { 0.7 }))
-        } else {
-            None
-        };
-    }
-    let wobble = (time * 7.0).sin() * 0.035;
-    if (0.24 + wobble..0.43 + wobble).contains(&u) || (0.57 - wobble..0.76 - wobble).contains(&u) {
-        Some(body.scale(0.6))
+    let sprite = match kind {
+        Kind::Grunt => crate::art::GRUNT,
+        Kind::Runner => crate::art::RUNNER,
+        Kind::Brute => crate::art::BRUTE,
+    };
+    let row = sprite[(v * sprite.len() as f32) as usize % sprite.len()].as_bytes();
+    let x = (u * 19.0) as usize;
+    ink(row.get(x).copied().unwrap_or(b' '), body, false)
+}
+
+fn weapon(frame: &mut Frame, game: &Game, scene_height: usize) {
+    let sprite = crate::art::SHOTGUN;
+    let height = (scene_height as f32 * 0.35).clamp(8.0, 32.0) as i32;
+    let width = height * 40 / sprite.len() as i32;
+    let reload = if game.player.reload > 0.0 {
+        (std::f32::consts::PI * game.player.reload / RELOAD_TIME).sin()
     } else {
-        None
+        0.0
+    };
+    let recoil = (game.muzzle / 0.07 * 3.0) as i32;
+    let ox = frame.width as i32 / 2 + frame.width as i32 / 9 - width / 2;
+    let oy = scene_height as i32 - height + recoil + (reload * height as f32 * 0.65) as i32;
+    for y in 0..height {
+        let row = sprite[y as usize * sprite.len() / height as usize].as_bytes();
+        for x in 0..width {
+            let mark = row
+                .get(x as usize * 40 / width as usize)
+                .copied()
+                .unwrap_or(b' ');
+            if let Some(color) = ink(mark, Rgb(94, 123, 139), true)
+                && oy + y < scene_height as i32
+            {
+                frame.pixel(ox + x, oy + y, color);
+            }
+        }
+    }
+    if game.muzzle > 0.0 {
+        let mx = ox + width / 2;
+        for y in -7_i32..2 {
+            for x in -8_i32..=8 {
+                let r = x.abs() + (y + 2).abs();
+                if r < 6 || (y == -2 && x.abs() < 8) {
+                    frame.pixel(mx + x, oy + y, if r < 3 { WHITE } else { GOLD });
+                }
+            }
+        }
     }
 }
 
 fn minimap(frame: &mut Frame, game: &Game) {
-    let ox = 2_i32;
-    let oy = 2_i32;
-    for y in -1..=world::HEIGHT as i32 {
-        for x in -1..=world::WIDTH as i32 {
-            let color = if x < 0 || y < 0 || x == world::WIDTH as i32 || y == world::HEIGHT as i32 {
+    let (ox, oy) = (2_i32, 2_i32);
+    let (px, py) = game.player.pos.cell();
+    let compact = frame.width < 60 || frame.height < 22;
+    let (mw, mh) = if compact {
+        (9, 9)
+    } else {
+        (world::WIDTH as i32, world::HEIGHT as i32)
+    };
+    let sx = (px - mw / 2).clamp(0, world::WIDTH as i32 - mw);
+    let sy = (py - mh / 2).clamp(0, world::HEIGHT as i32 - mh);
+    for y in -1..=mh {
+        for x in -1..=mw {
+            let color = if x < 0 || y < 0 || x == mw || y == mh {
                 DIM
-            } else if world::wall(x, y) {
+            } else if world::wall(sx + x, sy + y) {
                 MM_WALL
             } else {
                 BG
@@ -367,11 +464,17 @@ fn minimap(frame: &mut Frame, game: &Game) {
             frame.pixel(ox + x, oy + y, color);
         }
     }
+    let mark = |frame: &mut Frame, x: i32, y: i32, color| {
+        if x >= sx && y >= sy && x < sx + mw && y < sy + mh {
+            frame.pixel(ox + x - sx, oy + y - sy, color);
+        }
+    };
     for pickup in &game.pickups {
         let (x, y) = pickup.pos.cell();
-        frame.pixel(
-            ox + x,
-            oy + y,
+        mark(
+            frame,
+            x,
+            y,
             if pickup.kind == PickupKind::Medkit {
                 GREEN.scale(0.5)
             } else {
@@ -381,17 +484,16 @@ fn minimap(frame: &mut Frame, game: &Game) {
     }
     for enemy in game.enemies.iter().filter(|e| e.alive()) {
         let (x, y) = enemy.pos.cell();
-        frame.pixel(ox + x, oy + y, RED);
+        mark(frame, x, y, RED);
     }
-    let (x, y) = game.player.pos.cell();
     let facing = Vec2::facing(game.player.angle);
-    let (tx, ty) = (x + facing.x.round() as i32, y + facing.y.round() as i32);
+    let (tx, ty) = (px + facing.x.round() as i32, py + facing.y.round() as i32);
     if !world::wall(tx, ty)
         && world::visible(game.player.pos, Vec2::new(tx as f32 + 0.5, ty as f32 + 0.5))
     {
-        frame.pixel(ox + tx, oy + ty, WHITE);
+        mark(frame, tx, ty, WHITE);
     }
-    frame.pixel(ox + x, oy + y, GREEN);
+    mark(frame, px, py, GREEN);
 }
 
 fn hud(frame: &mut Frame, game: &Game, stats: Stats) {
@@ -471,9 +573,38 @@ fn hud(frame: &mut Frame, game: &Game, stats: Stats) {
         message = format!("LAST HOSTILES: {bearing}  {:.0}m", delta.length());
     }
     frame.text(1, row + 3, &message, GOLD);
+    if frame.width >= 90 {
+        let x = frame.width - 31;
+        let health = (p.hp.max(0) as usize).div_ceil(10).min(10);
+        frame.text(
+            x,
+            row,
+            &format!("VITAL [{}{}]", "━".repeat(health), "·".repeat(10 - health)),
+            if p.hp > 30 { GREEN } else { RED },
+        );
+        let shells = p.shells.min(MAGAZINE) as usize;
+        frame.text(
+            x,
+            row + 1,
+            &format!(
+                "LOAD  {}{}",
+                "▮ ".repeat(shells),
+                "· ".repeat(MAGAZINE as usize - shells)
+            ),
+            GOLD,
+        );
+    }
 }
 
 fn menu(frame: &mut Frame, game: &Game, stats: Stats) {
+    let edge = Rgb(32, 59, 72);
+    for y in 0..frame.height {
+        frame.text(0, y, "│", edge);
+        frame.text(frame.width - 1, y, "│", edge);
+    }
+    let rule = "─".repeat(frame.width - 2);
+    frame.text(1, 0, &rule, edge);
+    frame.text(1, frame.height - 1, &rule, edge);
     let title = match game.phase {
         Phase::Title => "TERMINAL // BREACH",
         Phase::Paused => "PAUSED",
@@ -487,8 +618,22 @@ fn menu(frame: &mut Frame, game: &Game, stats: Stats) {
     frame.center(2, &"─".repeat((frame.width - 6).min(44)), DIM);
     match game.phase {
         Phase::Title => {
+            let spacious = frame.width >= 78 && frame.height >= 28;
+            if spacious {
+                let logo = [
+                    "████▄  ████▄  █████  ▄███▄  ▄████  █   █",
+                    "█   █  █   █  █      █   █  █      █   █",
+                    "████   ████   ████   █████  █      █████",
+                    "█   █  █  █   █      █   █  █      █   █",
+                    "████   █   █  █████  █   █   ████  █   █",
+                ];
+                for (i, line) in logo.iter().enumerate() {
+                    frame.center(5 + i, line, if i < 2 { WHITE } else { GREEN });
+                }
+                frame.center(11, "N I G H T   S H I F T   / /   S E C T O R   0 7", DIM);
+            }
             let lines = [
-                "RUST EDITION",
+                "PERIMETER SEALED. HOSTILES INBOUND.",
                 "",
                 "CLEAR FIVE WAVES. GET OUT.",
                 "",
@@ -499,7 +644,11 @@ fn menu(frame: &mut Frame, game: &Game, stats: Stats) {
                 "H controls   CTRL-C quit",
             ];
             for (i, line) in lines.iter().enumerate() {
-                frame.center(4 + i, line, if i == 7 { GOLD } else { WHITE });
+                frame.center(
+                    (if spacious { 14 } else { 4 }) + i,
+                    line,
+                    if i == 7 { GOLD } else { WHITE },
+                );
             }
         }
         Phase::Paused => {
