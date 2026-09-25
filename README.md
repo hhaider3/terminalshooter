@@ -21,25 +21,56 @@ sky gradients are continuous, with fine panel details visible up close.
 
 [View the 220×70 renderer preview](docs/images/rust-arena-large.png).
 
-## Play
+## Quickstart
 
-This checkout has a project-local Rust toolchain installed:
+Install [Git](https://git-scm.com/downloads) and the current stable
+[Rust toolchain](https://rustup.rs/) (which includes Cargo). On Windows, follow
+the Rust installer prompts for the required C++ build tools. Open a terminal
+at least **40 columns by 16 rows**; a larger window shows more of the arena.
+After installing Rust, reopen your terminal if `cargo` is not found.
 
-```bash
+### macOS
+
+Open Terminal or another terminal app, then run:
+
+```sh
+git clone https://github.com/hhaider3/terminalshooter.git
+cd terminalshooter
 ./play.sh
 ```
 
-The launcher builds the optimized executable and starts it. On another machine,
-install [Rust](https://rustup.rs/) first, then use the launcher or Cargo:
+### Linux
 
-```bash
+Open a terminal, then run:
+
+```sh
+git clone https://github.com/hhaider3/terminalshooter.git
+cd terminalshooter
+./play.sh
+```
+
+### Windows
+
+Open PowerShell in Windows Terminal, then run:
+
+```powershell
+git clone https://github.com/hhaider3/terminalshooter.git
+cd terminalshooter
 cargo run --release --locked
 ```
 
-After building, run `./target/release/terminalshooter` directly if you prefer.
-On Windows, use `cargo run --release --locked` or
-`target\release\terminalshooter.exe`. macOS is tested locally. Linux and Windows
-are supported by the terminal library but have not been verified on this machine.
+For Windows Subsystem for Linux (WSL), install Rust and Git inside your Linux
+distribution and follow the Linux steps instead.
+
+The first launch downloads Rust dependencies and builds an optimized executable.
+On later launches, `./play.sh` rebuilds only when needed. You can also start the
+built game directly with `./target/release/terminalshooter` on macOS/Linux or
+`.\target\release\terminalshooter.exe` in Windows PowerShell. If you already have
+this repository checked out, run the launch command from its root directory.
+This checkout may contain a project-local Rust toolchain under `.tools/`;
+`play.sh` uses it automatically when present. The directory is not part of Git.
+macOS is tested locally. Linux and Windows are supported by the terminal library
+but have not been verified on this machine.
 
 ## First run
 
@@ -131,6 +162,10 @@ key repeat for shooting.
 ./play.sh --bench                # headless render/encoding benchmark
 ./play.sh --help
 ```
+
+On Windows, pass options after Cargo's `--` separator, for example
+`cargo run --release --locked -- --compact`. After building, you can also pass
+options to `.\target\release\terminalshooter.exe` directly.
 
 Default: 60 display frames per second, with a viewport capped at 160x50 cells.
 The terminal must have enough cells: enlarge its window or reduce the font size
