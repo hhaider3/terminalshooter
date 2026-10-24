@@ -93,7 +93,7 @@ fn pickups_are_collected_and_corpses_fade_during_wave_break() {
     assert_eq!(game.wave, 1);
     assert!(game.pickups.is_empty());
     assert_eq!(game.player.hp, 80);
-    assert_eq!(game.player.reserve, reserve + 16);
+    assert_eq!(game.player.reserve, reserve + AMMO_PICKUP);
     assert_eq!(game.enemies[0].corpse, 0.0);
     assert_eq!(game.enemies[0].flash, 0.0);
 }
@@ -145,6 +145,89 @@ fn enemies_out_of_sight_separate_even_from_the_same_spot() {
         assert!(world::fits(e.pos, 0.18));
         assert!(steps(e.pos) < start);
     }
+}
+
+#[test]
+fn medkits_restock_and_ammo_comes_from_kills_and_wave_resupply() {
+    let mut game = arena();
+    game.player.pos = Vec2::new(1.5, 1.5);
+    game.player.angle = 0.0;
+    game.enemies = (0..3)
+        .map(|i| enemy(Vec2::new(3.5, 1.3 + i as f32 * 0.2), Kind::Grunt))
+        .collect();
+    let reserve = game.player.reserve;
+    assert!(game.shoot());
+    assert_eq!(game.kills, 3);
+    let ammo = |game: &Game| {
+        game.pickups
+            .iter()
+            .filter(|p| p.kind == PickupKind::Ammo)
+            .count()
+    };
+    assert_eq!(ammo(&game), 1, "every third kill drops shells");
+    advance(&mut game, 4.1);
+    assert_eq!(game.wave, 2);
+    assert_eq!(game.player.reserve, reserve + WAVE_RESUPPLY);
+    assert_eq!(ammo(&game), 1, "uncollected drops stay");
+    for spot in MEDKIT_SPOTS {
+        assert!(
+            game.pickups
+                .iter()
+                .any(|p| p.kind == PickupKind::Medkit && p.pos == spot)
+        );
+    }
+}
+
+#[test]
+fn running_dry_drops_one_crate_in_the_farther_side_lane() {
+    let mut game = arena();
+    game.player.pos = Vec2::new(4.5, 12.5);
+    game.player.shells = 0;
+    game.player.reserve = 0;
+    game.enemies = vec![enemy(Vec2::new(16.5, 1.5), Kind::Grunt)];
+    advance(&mut game, 0.5);
+    assert_eq!(game.pickups.len(), 1);
+    assert_eq!(game.pickups[0].kind, PickupKind::Ammo);
+    assert_eq!(game.pickups[0].pos, Vec2::new(16.5, 6.5));
+    assert!(world::fits(game.pickups[0].pos, 0.22));
+}
+
+#[test]
+fn winning_offers_endless_waves_and_runs_record_the_best_score() {
+    let mut game = arena();
+    game.wave = FINAL_WAVE;
+    game.best = 50;
+    game.player.pos = Vec2::new(1.5, 1.5);
+    game.player.angle = 0.0;
+    game.enemies = vec![enemy(Vec2::new(3.5, 1.5), Kind::Grunt)];
+    game.shoot();
+    assert_eq!(game.phase, Phase::Won);
+    assert!(game.new_best);
+    assert_eq!(game.best, game.score);
+    game.continue_endless();
+    assert_eq!(game.phase, Phase::Playing);
+    advance(&mut game, 4.1);
+    assert_eq!(game.wave, FINAL_WAVE + 1);
+    assert_eq!(game.alive(), 15);
+    assert_eq!(game.wave_label(), "WAVE 6 ENDLESS");
+
+    let mut late = arena();
+    late.phase = Phase::Won;
+    late.wave = 30;
+    late.continue_endless();
+    advance(&mut late, 4.1);
+    assert_eq!(late.alive(), MAX_ENEMIES);
+
+    // A losing run below the best leaves it unchanged.
+    let mut lost = arena();
+    lost.best = 10_000;
+    lost.player.hp = 1;
+    lost.player.pos = Vec2::new(2.5, 1.5);
+    lost.enemies = vec![enemy(Vec2::new(3.2, 1.5), Kind::Grunt)];
+    advance(&mut lost, 1.5);
+    assert_eq!(lost.phase, Phase::Lost);
+    assert!(!lost.new_best);
+    assert_eq!(lost.best, 10_000);
 }
 
 #[test]

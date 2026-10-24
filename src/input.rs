@@ -21,7 +21,10 @@ pub struct Input {
     movement_events: HashMap<KeyCode, f64>,
     actions: HashMap<KeyCode, f64>,
     pub release_events: bool,
-    mouse_position: Option<(u16, u16)>,
+    /// Last pointer position in cells, fractional when reports are in pixels.
+    mouse_position: Option<(f32, f32)>,
+    /// Pixels per cell while the terminal sends SGR pixel reports (mode 1016).
+    pub cell_size: Option<(f32, f32)>,
     /// Terminal width in columns; zero disables edge turning.
     pub screen_width: u16,
     edge_turn: f32,
@@ -59,6 +62,7 @@ impl Input {
             actions: HashMap::new(),
             release_events,
             mouse_position: None,
+            cell_size: None,
             screen_width: 0,
             edge_turn: 0.0,
             left_mouse: false,
@@ -138,7 +142,12 @@ impl Input {
                 outcome.redraw = true;
             }
             Event::Mouse(mouse) => {
-                let pos = (mouse.column, mouse.row);
+                let (column, row) = (f32::from(mouse.column), f32::from(mouse.row));
+                // Pixel reports become fractional cells, keeping sub-cell aim.
+                let pos = match self.cell_size {
+                    Some((width, height)) => (column / width, row / height),
+                    None => (column, row),
+                };
                 match mouse.kind {
                     MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                         if mouse.kind == MouseEventKind::Drag(MouseButton::Left)
@@ -150,7 +159,7 @@ impl Input {
                             && game.mouse
                             && let Some(old) = self.mouse_position
                         {
-                            let dx = pos.0 as f32 - old.0 as f32;
+                            let dx = pos.0 - old.0;
                             game.player.angle =
                                 world::normalize_angle(game.player.angle + dx * game.sensitivity);
                         }
@@ -158,7 +167,7 @@ impl Input {
                         // The last report holds while the pointer rests, so
                         // turning continues until it moves back inward.
                         self.edge_turn = if game.phase == Phase::Playing && game.mouse {
-                            edge_turn(pos.0, self.screen_width)
+                            edge_turn(pos.0 as u16, self.screen_width)
                         } else {
                             0.0
                         };
@@ -259,16 +268,23 @@ impl Input {
                         KeyCode::Enter | KeyCode::Char('r')
                             if matches!(game.phase, Phase::Lost | Phase::Won) =>
                         {
-                            let (mouse, sensitivity, sound, minimap) =
-                                (game.mouse, game.sensitivity, game.sound, game.minimap);
+                            let (mouse, sensitivity, sound, minimap, best) = (
+                                game.mouse,
+                                game.sensitivity,
+                                game.sound,
+                                game.minimap,
+                                game.best,
+                            );
                             self.seed = self.seed.wrapping_add(1);
                             *game = Game::new(self.seed);
                             game.mouse = mouse;
                             game.sensitivity = sensitivity;
                             game.sound = sound;
                             game.minimap = minimap;
+                            game.best = best;
                             game.start();
                         }
+                        KeyCode::Char('c') if game.phase == Phase::Won => game.continue_endless(),
                         KeyCode::Char('r') => game.reload(),
                         KeyCode::Char('x') => game.dash(self.controls(now)),
                         KeyCode::Char('f')

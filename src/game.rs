@@ -7,6 +7,14 @@ pub const SHOT_DELAY: f32 = 0.38;
 pub const RELOAD_TIME: f32 = 0.85;
 /// Pellet spread either side of the crosshair, in radians.
 pub const SPREAD: f32 = 0.10;
+/// Side-lane medkit spots, restocked at the start of every wave.
+pub const MEDKIT_SPOTS: [Vec2; 2] = [Vec2::new(2.5, 7.5), Vec2::new(16.5, 7.5)];
+/// Reserve shells added at the start of each wave after the first.
+pub const WAVE_RESUPPLY: u16 = 12;
+/// Shells in an ammo pickup, dropped by every third kill.
+pub const AMMO_PICKUP: u16 = 6;
+/// Endless waves stop growing at this many enemies.
+pub const MAX_ENEMIES: usize = 25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -173,6 +181,12 @@ pub struct Game {
     pub sound: bool,
     pub shots_fired: u32,
     pub sprinting: bool,
+    /// Continue past the final wave instead of winning.
+    pub endless: bool,
+    /// Best score across runs; updated when a run ends.
+    pub best: u32,
+    /// The run that just ended beat the previous best.
+    pub new_best: bool,
     rng: Rng,
     route_cell: (i32, i32),
     routes: [u16; CELLS],
@@ -193,7 +207,7 @@ impl Game {
                 angle: -FRAC_PI_2,
                 hp: 100,
                 shells: MAGAZINE,
-                reserve: 48,
+                reserve: 24,
                 reload: 0.0,
                 cooldown: 0.0,
                 dash_cooldown: 0.0,
@@ -201,16 +215,7 @@ impl Game {
                 dash_direction: Vec2::default(),
             },
             enemies: Vec::new(),
-            pickups: vec![
-                Pickup {
-                    pos: Vec2::new(2.5, 7.5),
-                    kind: PickupKind::Medkit,
-                },
-                Pickup {
-                    pos: Vec2::new(16.5, 7.5),
-                    kind: PickupKind::Medkit,
-                },
-            ],
+            pickups: Vec::new(),
             wave: 0,
             score: 0,
             kills: 0,
@@ -231,6 +236,9 @@ impl Game {
             sound: false,
             shots_fired: 0,
             sprinting: false,
+            endless: false,
+            best: 0,
+            new_best: false,
             rng: Rng::new(seed),
             route_cell: pos.cell(),
             routes: world::routes(pos),
@@ -282,9 +290,9 @@ impl Game {
     }
 
     fn next_wave(&mut self) {
-        self.wave += 1;
+        self.wave = self.wave.saturating_add(1);
         self.enemies.clear();
-        let count = 3 + self.wave as usize * 2;
+        let count = (3 + self.wave as usize * 2).min(MAX_ENEMIES);
         let field = world::routes(self.player.pos);
         for i in 0..count {
             let kind = if self.wave >= 3 && i % 5 == 0 {
@@ -309,33 +317,99 @@ impl Game {
                     candidates.push(pos);
                 }
             }
-            // Arena has far more safe cells than the maximum 13 enemies.
+            // Arena has far more safe cells than MAX_ENEMIES.
             if !candidates.is_empty() {
                 let pos = candidates[self.rng.index(candidates.len())];
                 self.enemies.push(Enemy::new(pos, kind));
             }
         }
         self.player.shells = MAGAZINE;
-        self.player.reserve = self.player.reserve.max(count as u16 * 5);
+        // A fixed resupply keeps ammo drops worth collecting; the floor keeps
+        // every wave winnable however many shells the last one used.
+        if self.wave > 1 {
+            self.player.reserve = self.player.reserve.saturating_add(WAVE_RESUPPLY);
+        }
+        self.player.reserve = self.player.reserve.max(count as u16 * 2);
         self.player.reload = 0.0;
+        for spot in MEDKIT_SPOTS {
+            if !self
+                .pickups
+                .iter()
+                .any(|p| p.kind == PickupKind::Medkit && p.pos == spot)
+            {
+                self.pickups.push(Pickup {
+                    pos: spot,
+                    kind: PickupKind::Medkit,
+                });
+            }
+        }
+        let wave = self.wave_label();
         self.say(format!(
-            "WAVE {}/{}  //  {} HOSTILES INCOMING",
-            self.wave,
-            FINAL_WAVE,
+            "{wave}  //  {} HOSTILES INCOMING",
             self.enemies.len()
         ));
+    }
+
+    /// "WAVE 2/5" in a normal run, "WAVE 7 ENDLESS" after continuing.
+    pub fn wave_label(&self) -> String {
+        if self.endless {
+            format!("WAVE {} ENDLESS", self.wave)
+        } else {
+            format!("WAVE {}/{FINAL_WAVE}", self.wave)
+        }
     }
 
     fn finish_wave(&mut self) {
         self.auto_fire = false;
         self.combo = 0;
-        if self.wave == FINAL_WAVE {
-            self.phase = Phase::Won;
+        if self.wave >= FINAL_WAVE && !self.endless {
+            self.end(Phase::Won);
         } else {
-            self.break_time = 4.0;
-            self.player.hp = (self.player.hp + 25).min(100);
+            self.start_break();
             self.say("WAVE CLEAR  //  +25 HP  //  RESUPPLY INCOMING");
         }
+    }
+
+    fn start_break(&mut self) {
+        self.break_time = 4.0;
+        self.player.hp = (self.player.hp + 25).min(100);
+    }
+
+    fn end(&mut self, phase: Phase) {
+        self.phase = phase;
+        self.auto_fire = false;
+        self.new_best = self.score > self.best;
+        self.best = self.best.max(self.score);
+    }
+
+    /// Keep playing after winning, with waves that keep growing.
+    pub fn continue_endless(&mut self) {
+        if self.phase != Phase::Won {
+            return;
+        }
+        self.endless = true;
+        self.phase = Phase::Playing;
+        self.start_break();
+        self.say("ENDLESS MODE  //  +25 HP  //  NEXT WAVE IN 4s");
+    }
+
+    /// Never leave a run unwinnable: with no shells anywhere, drop a crate in
+    /// the side lane farther from the player.
+    fn ensure_ammo(&mut self) {
+        let p = &self.player;
+        if p.shells > 0 || p.reserve > 0 || self.pickups.iter().any(|p| p.kind == PickupKind::Ammo)
+        {
+            return;
+        }
+        let spot = MEDKIT_SPOTS
+            .into_iter()
+            .max_by(|a, b| (*a - p.pos).length().total_cmp(&(*b - p.pos).length()))
+            .unwrap_or(MEDKIT_SPOTS[0]);
+        self.pickups.push(Pickup {
+            pos: Vec2::new(spot.x, spot.y - 1.0),
+            kind: PickupKind::Ammo,
+        });
+        self.say("OUT OF SHELLS  //  CRATE DROPPED IN THE SIDE LANE");
     }
 
     pub fn shoot(&mut self) -> bool {
@@ -392,7 +466,7 @@ impl Game {
                 self.combo_time = 3.0;
                 self.score += 100 * self.combo;
                 killed += 1;
-                if self.kills.is_multiple_of(4) {
+                if self.kills.is_multiple_of(3) {
                     self.pickups.push(Pickup {
                         pos: enemy.pos,
                         kind: PickupKind::Ammo,
@@ -512,7 +586,9 @@ impl Game {
             let mut movement = match target {
                 Some(target) => {
                     let offset = target - enemy.pos;
-                    let speed = enemy.kind.speed() * (1.0 + (self.wave - 1) as f32 * 0.035);
+                    // Endless waves stop speeding up at 1.5x.
+                    let pace = (1.0 + (self.wave - 1) as f32 * 0.035).min(1.5);
+                    let speed = enemy.kind.speed() * pace;
                     offset.unit() * (speed * dt).min(offset.length())
                 }
                 None => Vec2::default(),
@@ -539,12 +615,12 @@ impl Game {
             self.combo_time = 0.0;
             self.say(format!("HIT -{damage}  //  X TO DODGE"));
             if self.player.hp == 0 {
-                self.phase = Phase::Lost;
-                self.auto_fire = false;
+                self.end(Phase::Lost);
                 return;
             }
         }
         self.collect_pickups();
+        self.ensure_ammo();
     }
 
     fn collect_pickups(&mut self) {
@@ -555,7 +631,7 @@ impl Game {
             }
             match pickup.kind {
                 PickupKind::Medkit if player.hp < 100 => player.hp = (player.hp + 30).min(100),
-                PickupKind::Ammo => player.reserve = player.reserve.saturating_add(16),
+                PickupKind::Ammo => player.reserve = player.reserve.saturating_add(AMMO_PICKUP),
                 _ => return true,
             }
             false

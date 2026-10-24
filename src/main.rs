@@ -12,7 +12,8 @@ use terminalshooter::{
     game::{Controls, Game, Phase},
     input::Input,
     keyboard,
-    render::{self, ColorMode, Stats, TerminalRenderer},
+    profile::Profile,
+    render::{self, ColorMode, Frame, Stats, TerminalRenderer},
 };
 
 const HELP: &str = "TERMINAL // BREACH — Rust arena FPS
@@ -24,6 +25,7 @@ Usage: terminalshooter [options]
   --large          Viewport up to 220x70 (default 160x50)
   --compact        Viewport up to 120x36 for slower terminals
   --no-mouse       Start with mouse-look disabled
+  --cell-mouse     Aim in whole cells even where pixel mouse reports work
   --seed N         Reproducible enemy spawns
   --bench          Benchmark rendering; no terminal needed
   --setup-keyboard  Enable macOS held-key access (run once in your terminal)
@@ -42,6 +44,7 @@ struct Options {
     large: bool,
     compact: bool,
     mouse: bool,
+    pixel_mouse: bool,
     seed: u64,
     bench: bool,
 }
@@ -66,6 +69,7 @@ impl Options {
             large: false,
             compact: false,
             mouse: true,
+            pixel_mouse: true,
             seed: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -94,6 +98,7 @@ impl Options {
                     result.large = false;
                 }
                 "--no-mouse" => result.mouse = false,
+                "--cell-mouse" => result.pixel_mouse = false,
                 "--bench" => result.bench = true,
                 "--fps" => {
                     result.fps = args
@@ -119,15 +124,42 @@ impl Options {
     }
 }
 
+/// Pixels per cell, when the terminal reports its size in pixels.
+fn cell_size() -> Option<(f32, f32)> {
+    let size = terminal::window_size().ok()?;
+    (size.width > 0 && size.height > 0 && size.columns > 0 && size.rows > 0).then(|| {
+        (
+            f32::from(size.width) / f32::from(size.columns),
+            f32::from(size.height) / f32::from(size.rows),
+        )
+    })
+}
+
+/// Terminals known to honour SGR pixel mouse reports (mode 1016). Others may
+/// ignore the request and keep sending cells, which would be misread as
+/// pixels, so they keep cell reports. Multiplexers do not forward the mode.
+fn pixel_mouse_supported() -> bool {
+    let env = |name: &str| std::env::var(name).unwrap_or_default();
+    let multiplexed = ["TMUX", "STY", "ZELLIJ"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    let known = env("TERM") == "xterm-kitty"
+        || env("TERM").starts_with("foot")
+        || matches!(env("TERM_PROGRAM").as_str(), "WezTerm" | "ghostty");
+    !multiplexed && known && cell_size().is_some()
+}
+
 struct Terminal {
     enhanced: bool,
+    pixel_mouse: bool,
     restored: Arc<AtomicBool>,
 }
 impl Terminal {
-    fn enter() -> io::Result<Self> {
+    fn enter(pixel_mouse: bool) -> io::Result<Self> {
         terminal::enable_raw_mode()?;
         let mut guard = Self {
             enhanced: false,
+            pixel_mouse: false,
             restored: Arc::new(AtomicBool::new(false)),
         };
         execute!(
@@ -138,6 +170,12 @@ impl Terminal {
             event::EnableMouseCapture,
             event::EnableFocusChange
         )?;
+        // Pixel reports reuse the SGR format that mouse capture just enabled.
+        if pixel_mouse && pixel_mouse_supported() {
+            io::stdout().write_all(b"\x1b[?1016h")?;
+            io::stdout().flush()?;
+            guard.pixel_mouse = true;
+        }
         // Crossterm bounds this protocol query; unsupported terminals use repeat.
         if terminal::supports_keyboard_enhancement().unwrap_or(false) {
             execute!(
@@ -154,10 +192,10 @@ impl Terminal {
 }
 impl Drop for Terminal {
     fn drop(&mut self) {
-        restore(self.enhanced, &self.restored);
+        restore(self.enhanced, self.pixel_mouse, &self.restored);
     }
 }
-fn restore(enhanced: bool, restored: &AtomicBool) {
+fn restore(enhanced: bool, pixel_mouse: bool, restored: &AtomicBool) {
     // The panic hook and unwinding guard share this flag so protocol stacks
     // are popped once, even when both cleanup paths run.
     if restored.swap(true, Ordering::Relaxed) {
@@ -168,6 +206,9 @@ fn restore(enhanced: bool, restored: &AtomicBool) {
     let _ = execute!(out, terminal::EndSynchronizedUpdate);
     if enhanced {
         let _ = execute!(out, event::PopKeyboardEnhancementFlags);
+    }
+    if pixel_mouse {
+        let _ = out.write_all(b"\x1b[?1016l");
     }
     let _ = execute!(
         out,
@@ -196,23 +237,42 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     ctrlc::set_handler(move || {
         handler_stop.store(true, Ordering::Relaxed);
     })?;
-    let terminal = Terminal::enter()?;
+    let terminal = Terminal::enter(options.pixel_mouse)?;
     // Restore before printing a panic, so it remains readable on the main screen.
     let previous_hook = std::panic::take_hook();
-    let enhanced = terminal.enhanced;
+    let (enhanced, pixel_mouse) = (terminal.enhanced, terminal.pixel_mouse);
     let restored = Arc::clone(&terminal.restored);
     std::panic::set_hook(Box::new(move |info| {
-        restore(enhanced, &restored);
+        restore(enhanced, pixel_mouse, &restored);
         previous_hook(info);
     }));
     let mut game = Game::new(options.seed);
-    game.mouse = options.mouse;
+    let profile_path = Profile::path();
+    let mut profile = profile_path
+        .as_deref()
+        .map(Profile::load)
+        .unwrap_or_default();
+    profile.apply(&mut game);
+    let saved_mouse = profile.mouse;
+    game.mouse &= options.mouse;
+    let mut save = |game: &Game| -> io::Result<()> {
+        profile.update(game);
+        // --no-mouse applies to this launch only, unless L turned mouse-look back on.
+        if !options.mouse && !game.mouse {
+            profile.mouse = saved_mouse;
+        }
+        profile_path
+            .as_deref()
+            .map_or(Ok(()), |path| profile.save(path))
+    };
     let native_keys = keyboard::local_key_state();
     let mut input = Input::with_key_state(options.seed, terminal.enhanced, native_keys);
     if !terminal.enhanced && native_keys.is_none() {
         game.say("KEY REPEAT MODE // Run ./play.sh --setup-keyboard for smooth holds");
     }
     let mut renderer = TerminalRenderer::new(options.color);
+    let mut frame = Frame::new(0, 0);
+    let mut encoded = String::new();
     let origin = Instant::now();
     let mut previous = origin;
     let mut accumulator = 0.0_f64;
@@ -223,7 +283,8 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut pacer = FramePacer::new(origin, frame_duration);
     let mut resize_pause = false;
     let mut out = io::stdout();
-    while !stop.load(Ordering::Relaxed) {
+    let mut run_over = false;
+    'frames: while !stop.load(Ordering::Relaxed) {
         let frame_start = Instant::now();
         let elapsed = frame_start.duration_since(previous).as_secs_f64();
         previous = frame_start;
@@ -238,6 +299,10 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         let too_small = cols < 40 || rows < 16;
         // The pointer stops at the window edge, not the capped viewport's.
         input.screen_width = cols;
+        if terminal.pixel_mouse {
+            // Cell size changes with the font as well as the window.
+            input.cell_size = cell_size();
+        }
         if too_small {
             if game.phase == Phase::Playing {
                 game.overlay(Phase::Paused);
@@ -269,7 +334,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
             let outcome = input.handle(ev, origin.elapsed().as_secs_f64(), &mut game);
             if outcome.quit {
-                return Ok(());
+                break 'frames;
             }
             if outcome.redraw {
                 renderer.invalidate();
@@ -294,6 +359,13 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             input.clear();
             game.auto_fire = false;
         }
+        // Save the best score as soon as a run ends, in case the game is killed.
+        // The ending shot may come from a click handled above, not a tick.
+        let over = matches!(game.phase, Phase::Won | Phase::Lost);
+        if over && !run_over {
+            let _ = save(&game);
+        }
+        run_over = over;
         if game.sound && (game.shots_fired > shots_before || game.player.hp < health_before) {
             out.write_all(b"\x07")?;
         }
@@ -304,7 +376,8 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         } else {
             (160, 50)
         };
-        let frame = render::draw(
+        render::draw_into(
+            &mut frame,
             &game,
             cols.min(max_cols).max(1) as usize,
             rows.min(max_rows).max(1) as usize,
@@ -313,12 +386,17 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 release_events: terminal.enhanced,
             },
         );
-        let encoded = renderer.encode(&frame);
+        renderer.encode_into(&frame, &mut encoded);
         if !encoded.is_empty() {
             out.write_all(encoded.as_bytes())?;
             out.flush()?;
         }
         pacer.wait();
+    }
+    // Restore the screen first so a save error stays readable.
+    drop(terminal);
+    if let Err(error) = save(&game) {
+        eprintln!("terminalshooter: could not save settings: {error}");
     }
     Ok(())
 }
@@ -329,6 +407,8 @@ fn benchmark(options: &Options) {
         let mut game = Game::new(7);
         game.start();
         let mut renderer = TerminalRenderer::new(options.color);
+        let mut frame = Frame::new(0, 0);
+        let mut encoded = String::new();
         let start = Instant::now();
         let mut bytes = 0;
         for _ in 0..600 {
@@ -341,8 +421,9 @@ fn benchmark(options: &Options) {
                     ..Controls::default()
                 },
             );
-            let frame = render::draw(&game, width, height, Stats::default());
-            bytes += renderer.encode(std::hint::black_box(&frame)).len();
+            render::draw_into(&mut frame, &game, width, height, Stats::default());
+            renderer.encode_into(std::hint::black_box(&frame), &mut encoded);
+            bytes += encoded.len();
         }
         println!(
             "{width}x{height}: {:.3} ms/frame, {} bytes/frame",

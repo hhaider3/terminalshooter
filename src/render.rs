@@ -1,4 +1,4 @@
-use crate::game::{FINAL_WAVE, Game, Kind, MAGAZINE, Phase, PickupKind, RELOAD_TIME};
+use crate::game::{Game, Kind, MAGAZINE, Phase, PickupKind, RELOAD_TIME};
 use crate::world::{self, Vec2};
 use std::fmt::Write;
 
@@ -63,6 +63,12 @@ impl Frame {
             cells: vec![Cell::default(); width * height],
         }
     }
+    pub fn reset(&mut self, width: usize, height: usize) {
+        self.width = width;
+        self.height = height;
+        self.cells.clear();
+        self.cells.resize(width * height, Cell::default());
+    }
     pub fn pixel(&mut self, x: i32, y: i32, color: Rgb) {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 * 2 {
             return;
@@ -121,20 +127,26 @@ pub struct Stats {
 
 pub fn draw(game: &Game, width: usize, height: usize, stats: Stats) -> Frame {
     let mut frame = Frame::new(width, height);
+    draw_into(&mut frame, game, width, height, stats);
+    frame
+}
+
+/// Draw into an existing frame, reusing its cell buffer across frames.
+pub fn draw_into(frame: &mut Frame, game: &Game, width: usize, height: usize, stats: Stats) {
+    frame.reset(width, height);
     if width < 40 || height < 16 {
         frame.center(height / 2, "Resize terminal to at least 40x16", GOLD);
-        return frame;
+        return;
     }
     if game.phase != Phase::Playing {
-        menu(&mut frame, game, stats);
-        return frame;
+        menu(frame, game, stats);
+        return;
     }
-    scene(&mut frame, game);
+    scene(frame, game);
     if game.minimap {
-        minimap(&mut frame, game);
+        minimap(frame, game);
     }
-    hud(&mut frame, game, stats);
-    frame
+    hud(frame, game, stats);
 }
 
 fn scene(frame: &mut Frame, game: &Game) {
@@ -169,18 +181,18 @@ fn scene(frame: &mut Frame, game: &Game) {
         };
         // Smooth attenuation preserves depth as output resolution increases.
         let light = 1.0 / (1.0 + hit.distance * 0.06);
+        // Skyline is anchored to world bearing, not the screen.
+        let azimuth = game.player.angle + (camera_x * plane_scale).atan();
+        let sector = ((azimuth + std::f32::consts::TAU) * 55.0) as i32;
+        let tower = ((sector / 4).rem_euclid(7) * 3 + 5) as f32;
+        let mx = x as f32 - moon_x;
+        let radius = h as f32 * 0.065;
         for y in 0..h {
             let yf = y as f32 + 0.5;
             let color = if yf < top {
                 let band = yf / horizon;
                 let sky = Rgb(7, 13, 27).mix(Rgb(42, 64, 77), band * band);
-                // Skyline is anchored to world bearing, not the screen.
-                let azimuth = game.player.angle + (camera_x * plane_scale).atan();
-                let sector = ((azimuth + std::f32::consts::TAU) * 55.0) as i32;
-                let tower = ((sector / 4).rem_euclid(7) * 3 + 5) as f32;
-                let mx = x as f32 - moon_x;
                 let my = yf - h as f32 * 0.16;
-                let radius = h as f32 * 0.065;
                 if moon_depth > 0.2 && mx * mx + my * my < radius * radius {
                     if (mx + radius * 0.5).powi(2) + (my - radius * 0.2).powi(2) < radius * radius {
                         Rgb(33, 41, 63)
@@ -540,8 +552,8 @@ fn hud(frame: &mut Frame, game: &Game, stats: Stats) {
         if p.hp > 30 { GREEN } else { RED },
     );
     let mut objective = format!(
-        "WAVE {}/{FINAL_WAVE}  LEFT {}  SCORE {}",
-        game.wave,
+        "{}  LEFT {}  SCORE {}",
+        game.wave_label(),
         game.alive(),
         game.score
     );
@@ -669,11 +681,16 @@ fn menu(frame: &mut Frame, game: &Game, stats: Stats) {
                 "ENTER or CLICK to deploy",
                 "H controls   CTRL-C quit",
             ];
+            let top = if spacious { 14 } else { 4 };
             for (i, line) in lines.iter().enumerate() {
+                frame.center(top + i, line, if i == 7 { GOLD } else { WHITE });
+            }
+            // Clear of the footer, which starts two rows above the bottom.
+            if game.best > 0 {
                 frame.center(
-                    (if spacious { 14 } else { 4 }) + i,
-                    line,
-                    if i == 7 { GOLD } else { WHITE },
+                    top + lines.len() + 1,
+                    &format!("BEST SCORE {}", game.best),
+                    DIM,
                 );
             }
         }
@@ -707,32 +724,47 @@ fn menu(frame: &mut Frame, game: &Game, stats: Stats) {
             for (i, line) in world::MAP.iter().skip(start).take(available).enumerate() {
                 frame.text(x, 4 + i, line, DIM);
             }
-            for enemy in game.enemies.iter().filter(|e| e.alive()) {
-                let (ex, ey) = enemy.pos.cell();
-                if ey as usize >= start && (ey as usize) < start + available {
-                    frame.text(x + ex as usize, 4 + ey as usize - start, "E", RED);
+            let mut mark = |pos: Vec2, glyph, color| {
+                let (mx, my) = pos.cell();
+                if my as usize >= start && (my as usize) < start + available {
+                    frame.text(x + mx as usize, 4 + my as usize - start, glyph, color);
+                }
+            };
+            for pickup in &game.pickups {
+                match pickup.kind {
+                    PickupKind::Medkit => mark(pickup.pos, "+", GREEN),
+                    PickupKind::Ammo => mark(pickup.pos, "*", GOLD),
                 }
             }
-            let (px, py) = game.player.pos.cell();
-            frame.text(x + px as usize, 4 + py as usize - start, "@", GREEN);
+            for enemy in game.enemies.iter().filter(|e| e.alive()) {
+                mark(enemy.pos, "E", RED);
+            }
+            mark(game.player.pos, "@", GREEN);
+            // The map uses at most height - 7 rows from row 4, so this row is free.
+            frame.center(frame.height - 3, "@ YOU  E HOSTILE  + MEDKIT  * AMMO", DIM);
             frame.center(frame.height - 2, "M / P / ESC: back", GOLD);
         }
         Phase::Won | Phase::Lost => {
+            let middle = frame.height / 2;
             frame.center(
-                frame.height / 2 - 2,
+                middle - 3,
                 &format!("SCORE {}   KILLS {}", game.score, game.kills),
                 WHITE,
             );
+            if game.new_best {
+                frame.center(middle - 2, "NEW BEST SCORE", GOLD);
+            } else if game.best > 0 {
+                frame.center(middle - 2, &format!("BEST {}", game.best), DIM);
+            }
             frame.center(
-                frame.height / 2,
-                &format!("WAVE {}/{FINAL_WAVE}   TIME {:.0}s", game.wave, game.time),
+                middle,
+                &format!("{}   TIME {:.0}s", game.wave_label(), game.time),
                 DIM,
             );
-            frame.center(
-                frame.height / 2 + 2,
-                "R / ENTER: new run   CTRL-C: quit",
-                GOLD,
-            );
+            frame.center(middle + 2, "R / ENTER: new run   CTRL-C: quit", GOLD);
+            if game.phase == Phase::Won {
+                frame.center(middle + 3, "C: continue in endless mode", GOLD);
+            }
         }
         _ => {}
     }
@@ -786,9 +818,53 @@ struct Encoded {
     bg: u32,
 }
 
+/// Foreground of a space, which is never visible and so never needs setting.
+const ANY: u32 = u32::MAX;
+
+fn digits(n: usize) -> usize {
+    n.checked_ilog10().unwrap_or(0) as usize + 1
+}
+
+/// Length of a cursor-forward sequence; one column needs no count.
+fn forward_len(columns: usize) -> usize {
+    if columns == 1 { 3 } else { 3 + digits(columns) }
+}
+
+fn forward(out: &mut String, columns: usize) {
+    if columns == 1 {
+        out.push_str("\x1b[C");
+    } else {
+        let _ = write!(out, "\x1b[{columns}C");
+    }
+}
+
+/// Emit the shortest move from a known cursor position, or an absolute one.
+fn move_cursor(out: &mut String, from: Option<(usize, usize)>, row: usize, col: usize) {
+    let absolute = 4 + digits(row + 1) + digits(col + 1);
+    match from {
+        Some((r, c)) if r == row && col > c && forward_len(col - c) < absolute => {
+            forward(out, col - c);
+        }
+        // Rows below always exist, so line feeds never scroll the screen.
+        Some((r, _))
+            if row > r && 1 + (row - r) + if col > 0 { forward_len(col) } else { 0 } < absolute =>
+        {
+            out.push('\r');
+            (r..row).for_each(|_| out.push('\n'));
+            if col > 0 {
+                forward(out, col);
+            }
+        }
+        _ => {
+            let _ = write!(out, "\x1b[{};{}H", row + 1, col + 1);
+        }
+    }
+}
+
 pub struct TerminalRenderer {
     pub mode: ColorMode,
     previous: Vec<Encoded>,
+    current: Vec<Encoded>,
     size: (usize, usize),
 }
 impl TerminalRenderer {
@@ -796,6 +872,7 @@ impl TerminalRenderer {
         Self {
             mode,
             previous: Vec::new(),
+            current: Vec::new(),
             size: (0, 0),
         }
     }
@@ -803,65 +880,95 @@ impl TerminalRenderer {
         self.previous.clear();
     }
     pub fn encode(&mut self, frame: &Frame) -> String {
-        let encode = |rgb: Rgb| match self.mode {
+        let mut out = String::new();
+        self.encode_into(frame, &mut out);
+        out
+    }
+    /// Replace `out` with the update for `frame`; empty when nothing changed.
+    pub fn encode_into(&mut self, frame: &Frame, out: &mut String) {
+        out.clear();
+        let mode = self.mode;
+        // 64 levels per channel look identical in these scenes, but let far more
+        // cells match the previous frame or reuse the current colour.
+        let level = |c: u8| u32::from(c) / 4 * 4 + 2;
+        let encode = |rgb: Rgb| match mode {
             ColorMode::Palette => palette(rgb),
-            ColorMode::TrueColor => ((rgb.0 as u32) << 16) | ((rgb.1 as u32) << 8) | rgb.2 as u32,
+            ColorMode::TrueColor => (level(rgb.0) << 16) | (level(rgb.1) << 8) | level(rgb.2),
         };
-        let cells: Vec<_> = frame
-            .cells
-            .iter()
-            .map(|c| Encoded {
-                glyph: c.glyph,
-                fg: encode(c.fg),
-                bg: encode(c.bg),
-            })
-            .collect();
-        let full = self.size != (frame.width, frame.height) || self.previous.len() != cells.len();
-        if !full && cells == self.previous {
-            return String::new();
+        self.current.clear();
+        self.current.extend(frame.cells.iter().map(|c| {
+            let (fg, bg) = (encode(c.fg), encode(c.bg));
+            // A half block whose halves match shows only its background, like a space.
+            if c.glyph == ' ' || (c.glyph == '▀' && fg == bg) {
+                Encoded {
+                    glyph: ' ',
+                    fg: ANY,
+                    bg,
+                }
+            } else {
+                Encoded {
+                    glyph: c.glyph,
+                    fg,
+                    bg,
+                }
+            }
+        }));
+        let full =
+            self.size != (frame.width, frame.height) || self.previous.len() != self.current.len();
+        if !full && self.current == self.previous {
+            return;
         }
-        let mut out = String::with_capacity(frame.cells.len() * 16);
         out.push_str("\x1b[?2026h");
         if full {
             out.push_str("\x1b[0m\x1b[2J");
         }
         let mut fg = None;
         let mut bg = None;
-        let mut adjacent = false;
-        for (i, cell) in cells.iter().enumerate() {
+        let mut cursor = None;
+        for (i, cell) in self.current.iter().enumerate() {
             if !full && *cell == self.previous[i] {
-                adjacent = false;
                 continue;
             }
-            if !adjacent || i % frame.width == 0 {
-                let _ = write!(out, "\x1b[{};{}H", i / frame.width + 1, i % frame.width + 1);
+            let (row, col) = (i / frame.width, i % frame.width);
+            if cursor != Some((row, col)) {
+                move_cursor(out, cursor, row, col);
             }
-            if fg != Some(cell.fg) {
-                self.color(&mut out, cell.fg, true);
-                fg = Some(cell.fg);
-            }
-            if bg != Some(cell.bg) {
-                self.color(&mut out, cell.bg, false);
-                bg = Some(cell.bg);
+            let set_fg = cell.fg != ANY && fg != Some(cell.fg);
+            let set_bg = bg != Some(cell.bg);
+            if set_fg || set_bg {
+                out.push_str("\x1b[");
+                if set_fg {
+                    self.color(out, cell.fg, true);
+                    fg = Some(cell.fg);
+                }
+                if set_fg && set_bg {
+                    out.push(';');
+                }
+                if set_bg {
+                    self.color(out, cell.bg, false);
+                    bg = Some(cell.bg);
+                }
+                out.push('m');
             }
             out.push(cell.glyph);
-            adjacent = true;
+            // Line wrap is off, so writing the last column leaves the cursor there.
+            cursor = Some((row, (col + 1).min(frame.width - 1)));
         }
         out.push_str("\x1b[0m\x1b[?2026l");
-        self.previous = cells;
+        std::mem::swap(&mut self.previous, &mut self.current);
         self.size = (frame.width, frame.height);
-        out
     }
+    /// Write SGR colour parameters, without the introducer or final `m`.
     fn color(&self, out: &mut String, value: u32, fg: bool) {
         let prefix = if fg { 38 } else { 48 };
         match self.mode {
             ColorMode::Palette => {
-                let _ = write!(out, "\x1b[{prefix};5;{value}m");
+                let _ = write!(out, "{prefix};5;{value}");
             }
             ColorMode::TrueColor => {
                 let _ = write!(
                     out,
-                    "\x1b[{prefix};2;{};{};{}m",
+                    "{prefix};2;{};{};{}",
                     (value >> 16) & 255,
                     (value >> 8) & 255,
                     value & 255

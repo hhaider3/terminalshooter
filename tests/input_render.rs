@@ -2,7 +2,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use terminalshooter::{
-    game::{FINAL_WAVE, Game, Phase},
+    game::{Controls, FINAL_WAVE, Game, Phase, Pickup, PickupKind},
     input::Input,
     render::{self, BG, ColorMode, Frame, GREEN, Stats, TerminalRenderer, WHITE},
     world::{self, Vec2},
@@ -450,6 +450,27 @@ fn edge_turning_respects_mouse_look_focus_and_keyboard_turns() {
 }
 
 #[test]
+fn pixel_mouse_reports_aim_in_fractions_of_a_cell() {
+    let mut game = Game::new(1);
+    game.start();
+    let mut input = Input::new(1, true);
+    input.screen_width = 100;
+    input.cell_size = Some((10.0, 20.0));
+    input.handle(motion(500, 300), 0.0, &mut game);
+    let angle = game.player.angle;
+    // Three pixels is less than one cell, which cell reports could not show.
+    input.handle(motion(503, 300), 0.1, &mut game);
+    let turned = game.player.angle - angle;
+    assert!((turned - 0.3 * game.sensitivity).abs() < 1e-6, "{turned}");
+    assert_eq!(input.controls(0.1).turn, 0.0);
+    // Edge turning uses the containing cell: pixel 995 is in column 99.
+    input.handle(motion(995, 300), 0.2, &mut game);
+    assert_eq!(input.controls(0.2).turn, 1.0);
+    input.handle(motion(945, 300), 0.3, &mut game);
+    assert_eq!(input.controls(0.3).turn, 0.0);
+}
+
+#[test]
 fn title_motion_does_not_start_and_restart_resets_game() {
     let mut game = Game::new(1);
     let mut input = Input::new(1, false);
@@ -487,6 +508,53 @@ fn hud_and_end_screen_count_waves_up_to_final_wave() {
             .plain()
             .contains(&progress)
     );
+}
+
+#[test]
+fn tactical_map_shows_pickups_and_menus_show_the_best_score() {
+    let mut game = Game::new(1);
+    game.start();
+    // Enemies are drawn over pickups; keep them off these cells.
+    game.enemies.clear();
+    game.pickups.push(Pickup {
+        pos: Vec2::new(16.5, 2.5),
+        kind: PickupKind::Ammo,
+    });
+    game.phase = Phase::Map;
+    let text = render::draw(&game, 80, 30, Stats::default()).plain();
+    let rows: Vec<Vec<char>> = text.lines().map(|row| row.chars().collect()).collect();
+    // World row 0 is drawn on screen row 4, centred horizontally.
+    let x = (80 - world::WIDTH) / 2;
+    assert_eq!(rows[4 + 7][x + 2], '+');
+    assert_eq!(rows[4 + 7][x + 16], '+');
+    assert_eq!(rows[4 + 2][x + 16], '*');
+    assert!(text.contains("+ MEDKIT  * AMMO"));
+
+    game.best = 4210;
+    game.phase = Phase::Title;
+    for (w, h) in [(40, 16), (80, 24), (120, 36)] {
+        let text = render::draw(&game, w, h, Stats::default()).plain();
+        assert!(text.contains("BEST SCORE 4210"), "{w}x{h}");
+    }
+    game.phase = Phase::Won;
+    game.new_best = true;
+    let text = render::draw(&game, 40, 16, Stats::default()).plain();
+    assert!(text.contains("NEW BEST SCORE"));
+    assert!(text.contains("C: continue in endless mode"));
+}
+
+#[test]
+fn won_screen_c_continues_into_endless_mode() {
+    let mut game = Game::new(1);
+    game.phase = Phase::Won;
+    game.wave = FINAL_WAVE;
+    game.enemies.clear();
+    let mut input = Input::new(1, true);
+    input.handle(key('c', KeyEventKind::Press), 0.0, &mut game);
+    assert_eq!(game.phase, Phase::Playing);
+    assert!(game.endless);
+    let text = render::draw(&game, 100, 30, Stats::default()).plain();
+    assert!(text.contains("WAVE CLEAR // NEXT IN 4"));
 }
 
 #[test]
@@ -570,6 +638,118 @@ fn unchanged_frames_emit_nothing_and_changes_only_update_their_cells() {
         assert!(!delta.contains("\x1b[2J"));
         assert!(delta.len() < full.len() / 3);
         assert!(delta.starts_with("\x1b[?2026h") && delta.ends_with("\x1b[?2026l"));
+    }
+}
+
+/// Minimal terminal that applies renderer output to a grid of visible cells.
+/// A space's foreground is invisible, so it is not recorded.
+struct Screen {
+    width: usize,
+    cells: Vec<(char, Vec<u32>, Vec<u32>)>,
+}
+impl Screen {
+    fn new(width: usize, height: usize) -> Self {
+        Self {
+            width,
+            cells: vec![(' ', vec![], vec![]); width * height],
+        }
+    }
+    fn apply(&mut self, output: &str) {
+        let (mut x, mut y) = (0, 0);
+        let (mut fg, mut bg) = (vec![], vec![]);
+        let mut chars = output.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\x1b' => {
+                    assert_eq!(chars.next(), Some('['));
+                    let mut params = String::new();
+                    let end = chars.by_ref().find(|&p| {
+                        let done = ('@'..='~').contains(&p);
+                        if !done {
+                            params.push(p);
+                        }
+                        done
+                    });
+                    let numbers: Vec<u32> =
+                        params.split(';').filter_map(|n| n.parse().ok()).collect();
+                    match end {
+                        Some('H') => (y, x) = (numbers[0] as usize - 1, numbers[1] as usize - 1),
+                        Some('C') => x += numbers.first().copied().unwrap_or(1) as usize,
+                        Some('J') => self.cells.fill((' ', vec![], vec![])),
+                        Some('m') => {
+                            let mut rest = &numbers[..];
+                            while let [first, tail @ ..] = rest {
+                                let length = if tail.first() == Some(&5) { 2 } else { 4 };
+                                match first {
+                                    0 => (fg, bg) = (vec![], vec![]),
+                                    38 => fg = tail[..length].to_vec(),
+                                    48 => bg = tail[..length].to_vec(),
+                                    other => panic!("unexpected SGR {other}"),
+                                }
+                                rest = if *first == 0 { tail } else { &tail[length..] };
+                            }
+                        }
+                        Some('h' | 'l') => {}
+                        other => panic!("unexpected sequence {other:?}"),
+                    }
+                }
+                '\r' => x = 0,
+                '\n' => y += 1,
+                glyph => {
+                    let visible_fg = if glyph == ' ' { vec![] } else { fg.clone() };
+                    self.cells[y * self.width + x] = (glyph, visible_fg, bg.clone());
+                    // Line wrap is disabled: the last column keeps the cursor.
+                    x = (x + 1).min(self.width - 1);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn incremental_updates_reproduce_the_frame_and_a_full_repaint() {
+    for mode in [ColorMode::Palette, ColorMode::TrueColor] {
+        for (w, h) in [(40, 16), (100, 30), (160, 50)] {
+            let mut game = Game::new(3);
+            game.start();
+            let mut renderer = TerminalRenderer::new(mode);
+            let mut screen = Screen::new(w, h);
+            for step in 0..40 {
+                game.player.hp = 100;
+                game.phase = if (20..25).contains(&step) {
+                    Phase::Paused
+                } else {
+                    Phase::Playing
+                };
+                game.tick(
+                    1.0 / 60.0,
+                    Controls {
+                        turn: 0.6,
+                        forward: 0.3,
+                        ..Controls::default()
+                    },
+                );
+                let frame = render::draw(&game, w, h, Stats::default());
+                screen.apply(&renderer.encode(&frame));
+                let mut fresh = Screen::new(w, h);
+                fresh.apply(&TerminalRenderer::new(mode).encode(&frame));
+                assert!(
+                    screen.cells == fresh.cells,
+                    "{mode:?} {w}x{h} step {step}: incremental output diverged"
+                );
+                for (cell, (glyph, _, bg)) in frame.cells.iter().zip(&screen.cells) {
+                    // A half block with matching halves may be sent as a space.
+                    assert!(*glyph == cell.glyph || (*glyph == ' ' && cell.glyph == '▀'));
+                    if mode == ColorMode::TrueColor {
+                        let expected = [cell.bg.0, cell.bg.1, cell.bg.2];
+                        assert_eq!(bg[0], 2);
+                        for (got, want) in bg[1..].iter().zip(expected) {
+                            assert!(got.abs_diff(u32::from(want)) <= 2);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

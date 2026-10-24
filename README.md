@@ -84,9 +84,15 @@ distance for more shotgun damage and use the pillars to separate enemies.
   movement direction, or forward when stationary, and has a 1.8-second cooldown.
 - The shotgun hits enemies across its spread. A centered close shot kills a grunt.
 - Quick kills build a score multiplier up to 5x. Taking damage breaks the streak.
-- Between waves, a four-second break restores 25 HP and resupplies shells.
-- Green pickups heal; amber pickups provide ammo. Two medkits start in the side lanes.
-- Clear all five waves to win. The HUD points toward the last two enemies.
+- Between waves, a four-second break restores 25 HP; each new wave adds 12
+  reserve shells and refills your magazine.
+- Green pickups heal 30 HP; the two side-lane medkits restock every wave.
+  Every third kill drops an amber ammo pickup worth 6 shells. If you run
+  completely dry, a crate drops in the farther side lane.
+- Clear all five waves to win, then press **C** to continue into endless waves
+  that keep growing. The HUD points toward the last two enemies.
+- Your best score and control preferences (sensitivity, mouse-look, beeps,
+  minimap) are saved between launches.
 
 ## Controls
 
@@ -109,11 +115,20 @@ distance for more shotgun damage and use the pillars to separate enemies.
 | P / Escape | Pause/resume; close an overlay |
 | B | Toggle terminal beeps |
 | R / Enter after a run | Restart, preserving control preferences |
+| C after winning | Continue into endless waves |
 | Ctrl-C | Quit from any screen |
 
 The title screen, menus, and tactical map freeze simulation. Focus loss pauses
 the game and clears held input and automatic firing. The minimap's green dot
 marks the player's containing cell; its white tick shows the facing direction.
+The tactical map marks you (`@`), hostiles (`E`), medkits (`+`) and ammo (`*`).
+
+Settings and the best score live in `profile.txt` under
+`~/Library/Application Support/terminalshooter/` on macOS,
+`$XDG_CONFIG_HOME/terminalshooter/` (default `~/.config/terminalshooter/`) on
+Linux, and `%APPDATA%\terminalshooter\` on Windows. Set
+`TERMINALSHOOTER_PROFILE` to use another file. `--no-mouse` applies to one
+launch and does not change the saved mouse-look preference.
 
 ## Terminal input limitations
 
@@ -124,6 +139,14 @@ Mouse movement stops at window edges, so resting the pointer in the outer column
 (5% of the window width each side, at least 2) keeps turning, faster nearer the
 edge; move it back inward to stop. Q/E can always rotate the camera. `L` toggles
 mouse-look, including edge turning, not pointer capture.
+
+Most terminals report the mouse in whole cells, so each cell of movement turns
+about 1.4° at the default sensitivity. In kitty, WezTerm, Ghostty and foot, the
+game asks for pixel reports (SGR mode 1016) and aims in fractions of a cell.
+This needs the terminal to report its window size in pixels and is skipped
+inside tmux, screen and Zellij, which do not forward the mode. Other terminals
+are left on cell reports, because one that ignored the request would have its
+cell positions misread as pixels. Use `--cell-mouse` to turn it off.
 
 Compatible terminals use key press/release events through the keyboard enhancement
 protocol. In local macOS sessions, movement keys received by the game can also use
@@ -161,6 +184,7 @@ key repeat for shooting.
 ./play.sh --large                # viewport up to 220x70
 ./play.sh --compact              # previous 120x36 limit for slower terminals
 ./play.sh --no-mouse             # keyboard-only aiming
+./play.sh --cell-mouse           # whole-cell mouse reports only
 ./play.sh --seed 7               # reproducible spawns
 ./play.sh --bench                # headless render/encoding benchmark
 ./play.sh --help
@@ -184,6 +208,11 @@ The renderer compares final, encoded cells and sends only changes. Text, menus,
 and graphics are composed before output; synchronized updates are used where the
 terminal supports them. Static menus send nothing after the first frame.
 256-color comparisons happen after palette conversion, avoiding redundant colors.
+Truecolor uses 64 levels per channel, which looks identical in these scenes but
+lets more cells match. Foreground and background share one escape sequence,
+short gaps use relative cursor moves, and half blocks whose halves match are
+sent as spaces. While turning continuously at 160x50, a frame is about 13 KB
+in 256 colors and 34 KB in truecolor.
 The terminal still determines visible FPS: `--bench` excludes terminal drawing,
 output latency, and human playtesting.
 
@@ -207,12 +236,15 @@ export CARGO_HOME="$PWD/.tools/cargo"
 export PATH="$CARGO_HOME/bin:$PATH"
 ```
 
-Tests cover complete runs, collision/navigation, shotgun spread, dodging, ammo,
-pause/restart, keyboard release/fallback, `L`, edge turning, minimap coordinates, menu composition,
-and incremental output. Unix tests launch the real executable through a
-pseudo-terminal to exercise protocol negotiation, input, resizing, focus loss,
-Ctrl-C, SIGTERM, and mode restoration. They do not drive the desktop Terminal GUI
-or physically move the pointer.
+Tests cover complete runs, endless waves, collision/navigation, shotgun spread,
+dodging, ammo and medkit supply, pause/restart, keyboard release/fallback, `L`,
+edge turning, pixel mouse reports, saved profiles, minimap and tactical map
+markers, menu composition, and incremental output, which is replayed through a
+small terminal model and compared with a full repaint. Unix tests launch the
+real executable through a pseudo-terminal to exercise protocol negotiation,
+input, resizing, focus loss, Ctrl-C, SIGTERM, settings persistence, and mode
+restoration, each with its own temporary profile. They do not drive the desktop
+Terminal GUI or physically move the pointer.
 
 | File | Responsibility |
 |---|---|
@@ -224,6 +256,7 @@ or physically move the pointer.
 | `src/art.rs` | Procedural enemy and weapon geometry, materials and surface detail |
 | `src/main.rs` | CLI, terminal lifecycle, signal cleanup, fixed-step loop, benchmark |
 | `src/pacing.rs` | Frame deadlines and recovery after output stalls |
+| `src/profile.rs` | Best score and control preferences saved between launches |
 | `tests/` | Gameplay, input/rendering, and executable PTY checks |
 
 The existing `fps_hd.py` and `test_fps.py` remain available
