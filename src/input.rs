@@ -22,10 +22,30 @@ pub struct Input {
     actions: HashMap<KeyCode, f64>,
     pub release_events: bool,
     mouse_position: Option<(u16, u16)>,
+    /// Terminal width in columns; zero disables edge turning.
+    pub screen_width: u16,
+    edge_turn: f32,
     left_mouse: bool,
     fire_pressed: bool,
     seed: u64,
     key_state: Option<KeyState>,
+}
+
+/// Turn rate for a pointer resting near a window edge, where terminal
+/// reports stop. It ramps from the zone's inner column to full speed at the edge.
+fn edge_turn(column: u16, width: u16) -> f32 {
+    let zone = (width / 20).max(2);
+    if width < zone * 4 {
+        return 0.0;
+    }
+    let turn = if column < zone {
+        -f32::from(zone - column) / f32::from(zone)
+    } else if column >= width - zone {
+        f32::from(column - (width - zone) + 1) / f32::from(zone)
+    } else {
+        0.0
+    };
+    turn.clamp(-1.0, 1.0)
 }
 
 impl Input {
@@ -39,6 +59,8 @@ impl Input {
             actions: HashMap::new(),
             release_events,
             mouse_position: None,
+            screen_width: 0,
+            edge_turn: 0.0,
             left_mouse: false,
             fire_pressed: false,
             seed,
@@ -49,6 +71,7 @@ impl Input {
         self.held.clear();
         self.movement_events.clear();
         self.mouse_position = None;
+        self.edge_turn = 0.0;
         self.left_mouse = false;
         self.fire_pressed = false;
     }
@@ -78,8 +101,10 @@ impl Input {
             forward: has(&[KeyCode::Char('w'), KeyCode::Up])
                 - has(&[KeyCode::Char('s'), KeyCode::Down]),
             strafe: has(&[KeyCode::Char('d')]) - has(&[KeyCode::Char('a')]),
-            turn: has(&[KeyCode::Char('e'), KeyCode::Right])
-                - has(&[KeyCode::Char('q'), KeyCode::Left]),
+            turn: (has(&[KeyCode::Char('e'), KeyCode::Right])
+                - has(&[KeyCode::Char('q'), KeyCode::Left])
+                + self.edge_turn)
+                .clamp(-1.0, 1.0),
             sprint: self
                 .held
                 .get(&KeyCode::Char('w'))
@@ -130,6 +155,13 @@ impl Input {
                                 world::normalize_angle(game.player.angle + dx * game.sensitivity);
                         }
                         self.mouse_position = Some(pos);
+                        // The last report holds while the pointer rests, so
+                        // turning continues until it moves back inward.
+                        self.edge_turn = if game.phase == Phase::Playing && game.mouse {
+                            edge_turn(pos.0, self.screen_width)
+                        } else {
+                            0.0
+                        };
                     }
                     MouseEventKind::Down(MouseButton::Left) => {
                         self.mouse_position = Some(pos);
@@ -268,6 +300,7 @@ impl Input {
                         KeyCode::Char('l') => {
                             game.mouse = !game.mouse;
                             self.mouse_position = None;
+                            self.edge_turn = 0.0;
                             game.say(if game.mouse {
                                 "TERMINAL MOUSE ON  //  Q/E ALSO TURN"
                             } else {

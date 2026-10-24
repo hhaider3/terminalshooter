@@ -101,6 +101,7 @@ distance for more shotgun damage and use the pillars to separate enemies.
 | R / right mouse | Reload |
 | X | Dodge in your movement direction |
 | Mouse movement | Horizontal aim, when the terminal reports motion |
+| Pointer at left/right window edge | Keep turning while it rests there |
 | L | Toggle terminal mouse-look; reset its movement baseline |
 | `[` / `]` / mouse wheel | Adjust sensitivity |
 | M / Shift+M | Minimap / tactical map |
@@ -119,8 +120,10 @@ marks the player's containing cell; its white tick shows the facing direction.
 The Rust version uses [Crossterm](https://docs.rs/crossterm/0.29.0/crossterm/event/index.html)
 for key, mouse, focus, and resize events. It does **not** attempt desktop pointer
 locking. The experimental pointer-lock helper has also been removed from Python.
-Mouse movement stops at window edges; Q/E can always rotate the camera. `L` toggles
-mouse-look, not pointer capture.
+Mouse movement stops at window edges, so resting the pointer in the outer columns
+(5% of the window width each side, at least 2) keeps turning, faster nearer the
+edge; move it back inward to stop. Q/E can always rotate the camera. `L` toggles
+mouse-look, including edge turning, not pointer capture.
 
 Compatible terminals use key press/release events through the keyboard enhancement
 protocol. In local macOS sessions, movement keys received by the game can also use
@@ -205,7 +208,7 @@ export PATH="$CARGO_HOME/bin:$PATH"
 ```
 
 Tests cover complete runs, collision/navigation, shotgun spread, dodging, ammo,
-pause/restart, keyboard release/fallback, `L`, minimap coordinates, menu composition,
+pause/restart, keyboard release/fallback, `L`, edge turning, minimap coordinates, menu composition,
 and incremental output. Unix tests launch the real executable through a
 pseudo-terminal to exercise protocol negotiation, input, resizing, focus loss,
 Ctrl-C, SIGTERM, and mode restoration. They do not drive the desktop Terminal GUI

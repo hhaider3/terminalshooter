@@ -32,7 +32,8 @@ Usage: terminalshooter [options]
 WASD move, Q/E turn, Space/click shotgun, F toggle-fire, X dodge,
 R reload, P/Esc pause, M minimap, Shift+M tactical map, H help,
 L mouse-look on/off, Ctrl-C quit. Mouse-look uses terminal events;
-it does not lock the desktop pointer. Keyboard-only play is supported.";
+it does not lock the desktop pointer. Rest the pointer at a window edge
+to keep turning. Keyboard-only play is supported.";
 
 #[derive(Debug)]
 struct Options {
@@ -235,6 +236,8 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         }
         let (cols, rows) = terminal::size()?;
         let too_small = cols < 40 || rows < 16;
+        // The pointer stops at the window edge, not the capped viewport's.
+        input.screen_width = cols;
         if too_small {
             if game.phase == Phase::Playing {
                 game.overlay(Phase::Paused);

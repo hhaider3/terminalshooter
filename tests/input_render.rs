@@ -5,7 +5,7 @@ use terminalshooter::{
     game::{FINAL_WAVE, Game, Phase},
     input::Input,
     render::{self, BG, ColorMode, Frame, GREEN, Stats, TerminalRenderer, WHITE},
-    world::Vec2,
+    world::{self, Vec2},
 };
 
 fn key(c: char, kind: KeyEventKind) -> Event {
@@ -390,6 +390,63 @@ fn mouse_l_toggle_and_motion_work_at_windowed_and_fullscreen_coordinates() {
         input.handle(motion(x + 22, y), 2.2, &mut game);
         assert!(game.player.angle > angle);
     }
+}
+
+#[test]
+fn pointer_resting_at_a_window_edge_keeps_turning_until_moved_inward() {
+    let mut game = Game::new(1);
+    game.start();
+    let mut input = Input::new(1, true);
+    input.screen_width = 100;
+    input.handle(motion(50, 15), 0.0, &mut game);
+    assert_eq!(input.controls(0.0).turn, 0.0);
+    // No further reports arrive while the pointer rests at the edge.
+    input.handle(motion(99, 15), 0.1, &mut game);
+    let angle = game.player.angle;
+    for _ in 0..60 {
+        game.tick(1.0 / 120.0, input.take_controls(0.1));
+    }
+    let turned = world::normalize_angle(game.player.angle - angle);
+    assert!((turned - 1.1).abs() < 0.01, "{turned}");
+    // The zone ramps up toward the edge on both sides.
+    input.handle(motion(96, 15), 0.2, &mut game);
+    assert!((input.controls(0.2).turn - 0.4).abs() < 1e-6);
+    input.handle(motion(4, 15), 0.3, &mut game);
+    assert!((input.controls(0.3).turn + 0.2).abs() < 1e-6);
+    input.handle(motion(0, 15), 0.4, &mut game);
+    assert_eq!(input.controls(0.4).turn, -1.0);
+    input.handle(motion(50, 15), 0.5, &mut game);
+    assert_eq!(input.controls(0.5).turn, 0.0);
+}
+
+#[test]
+fn edge_turning_respects_mouse_look_focus_and_keyboard_turns() {
+    let mut game = Game::new(1);
+    game.start();
+    let mut input = Input::new(1, true);
+    input.handle(motion(0, 15), 0.0, &mut game);
+    assert_eq!(input.controls(0.0).turn, 0.0, "unknown width has no zone");
+    input.screen_width = 100;
+    input.handle(motion(99, 15), 0.1, &mut game);
+    input.handle(key('e', KeyEventKind::Press), 0.1, &mut game);
+    assert_eq!(input.controls(0.1).turn, 1.0);
+    input.handle(key('e', KeyEventKind::Release), 0.2, &mut game);
+    input.handle(key('q', KeyEventKind::Press), 0.2, &mut game);
+    assert_eq!(input.controls(0.2).turn, 0.0);
+    input.handle(key('q', KeyEventKind::Release), 0.3, &mut game);
+    // L turns edge turning off with the rest of mouse-look.
+    input.handle(key('l', KeyEventKind::Press), 0.3, &mut game);
+    assert_eq!(input.controls(0.3).turn, 0.0);
+    input.handle(motion(99, 15), 0.4, &mut game);
+    assert_eq!(input.controls(0.4).turn, 0.0);
+    input.handle(key('l', KeyEventKind::Press), 1.0, &mut game);
+    input.handle(motion(99, 15), 1.1, &mut game);
+    assert_eq!(input.controls(1.1).turn, 1.0);
+    // Resuming after focus loss waits for a fresh pointer report.
+    input.handle(Event::FocusLost, 1.2, &mut game);
+    input.handle(key('p', KeyEventKind::Press), 1.3, &mut game);
+    assert_eq!(game.phase, Phase::Playing);
+    assert_eq!(input.controls(1.3).turn, 0.0);
 }
 
 #[test]

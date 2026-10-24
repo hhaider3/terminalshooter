@@ -690,7 +690,7 @@ fn menu(frame: &mut Frame, game: &Game, stats: Stats) {
                 "M: minimap  SHIFT+M: tactical map",
                 "[ / ] / wheel: mouse sensitivity",
                 "B: beep sound  P / ESC: pause",
-                "Mouse reports stop at window edges.",
+                "Pointer at window edge keeps turning.",
                 "Q/E always work. CTRL-C quits.",
                 "H / ESC: back",
             ];
