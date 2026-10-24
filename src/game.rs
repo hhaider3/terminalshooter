@@ -5,6 +5,8 @@ pub const MAGAZINE: u16 = 6;
 pub const FINAL_WAVE: u8 = 5;
 pub const SHOT_DELAY: f32 = 0.38;
 pub const RELOAD_TIME: f32 = 0.85;
+/// Pellet spread either side of the crosshair, in radians.
+pub const SPREAD: f32 = 0.10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -57,6 +59,14 @@ impl Kind {
             Self::Grunt => 1.2,
             Self::Runner => 1.0,
             Self::Brute => 1.5,
+        }
+    }
+    /// Half the sprite's width in map units, shared by rendering and hits.
+    pub fn half_width(self) -> f32 {
+        match self {
+            Self::Grunt => 0.48,
+            Self::Runner => 0.32,
+            Self::Brute => 0.72,
         }
     }
 }
@@ -352,12 +362,20 @@ impl Game {
             let delta = enemy.pos - self.player.pos;
             let distance = delta.length();
             let angle = world::normalize_angle(delta.angle() - self.player.angle).abs();
-            if distance > 12.0 || angle > 0.23 || !world::visible(self.player.pos, enemy.pos) {
+            // Sprites are billboards on the camera plane, so the crosshair is
+            // over the body exactly when the lateral offset is within its half-width.
+            let body = (enemy.kind.half_width() / distance.max(0.001))
+                .min(1.0)
+                .asin();
+            if distance > 12.0
+                || angle > body + SPREAD
+                || !world::visible(self.player.pos, enemy.pos)
+            {
                 continue;
             }
             let damage = 72.0
                 * (1.0 - (distance - 4.0).max(0.0) * 0.075).max(0.4)
-                * if angle < 0.12 { 1.0 } else { 0.65 };
+                * if angle <= body { 1.0 } else { 0.65 };
             enemy.hp -= damage as i32;
             enemy.flash = 0.16;
             enemy.windup = 0.0;
@@ -430,6 +448,13 @@ impl Game {
             }
         }
         if self.break_time > 0.0 {
+            // The break is for recovering: pickups stay collectable and the
+            // final kill's corpse and hit flash fade as they do in combat.
+            for enemy in &mut self.enemies {
+                decay(&mut enemy.flash, dt);
+                decay(&mut enemy.corpse, dt);
+            }
+            self.collect_pickups();
             decay(&mut self.break_time, dt);
             if self.break_time == 0.0 {
                 self.next_wave();
@@ -484,20 +509,29 @@ impl Game {
             } else {
                 world::waypoint(enemy.pos, &self.routes)
             };
-            if let Some(target) = target {
-                let offset = target - enemy.pos;
-                let speed = enemy.kind.speed() * (1.0 + (self.wave - 1) as f32 * 0.035);
-                let mut movement = offset.unit() * (speed * dt).min(offset.length());
-                if sees {
-                    for (other, (pos, alive)) in positions.iter().enumerate() {
-                        let apart = enemy.pos - *pos;
-                        if index != other && *alive && apart.length() < 0.55 {
-                            movement = movement + apart.unit() * (dt * 0.8);
-                        }
-                    }
+            let mut movement = match target {
+                Some(target) => {
+                    let offset = target - enemy.pos;
+                    let speed = enemy.kind.speed() * (1.0 + (self.wave - 1) as f32 * 0.035);
+                    offset.unit() * (speed * dt).min(offset.length())
                 }
-                world::slide(&mut enemy.pos, movement, 0.18);
+                None => Vec2::default(),
+            };
+            // Routes converge on the same cell centres, so enemies out of sight
+            // need separating as much as those in pursuit.
+            for (other, (pos, alive)) in positions.iter().enumerate() {
+                let apart = enemy.pos - *pos;
+                if index != other && *alive && apart.length() < 0.55 {
+                    // Coincident enemies have no direction apart; split them by index.
+                    let away = if apart.length() > 0.0001 {
+                        apart.unit()
+                    } else {
+                        Vec2::facing(index as f32 * 2.4)
+                    };
+                    movement = movement + away * (dt * 0.8);
+                }
             }
+            world::slide(&mut enemy.pos, movement, 0.18);
         }
         if damage > 0 {
             self.player.hp = (self.player.hp - damage).max(0);
@@ -510,6 +544,10 @@ impl Game {
                 return;
             }
         }
+        self.collect_pickups();
+    }
+
+    fn collect_pickups(&mut self) {
         let player = &mut self.player;
         self.pickups.retain(|pickup| {
             if (pickup.pos - player.pos).length() > 0.65 {

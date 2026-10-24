@@ -61,6 +61,93 @@ fn shotgun_catches_a_group_and_clear_starts_break() {
 }
 
 #[test]
+fn pickups_are_collected_and_corpses_fade_during_wave_break() {
+    let mut game = arena();
+    game.player.pos = Vec2::new(1.5, 7.5);
+    game.player.angle = 0.0;
+    game.enemies = vec![enemy(Vec2::new(3.0, 7.5), Kind::Grunt)];
+    assert!(game.shoot());
+    assert!(game.break_time > 0.0);
+    game.player.hp = 50;
+    let reserve = game.player.reserve;
+    game.pickups = vec![
+        Pickup {
+            pos: Vec2::new(2.5, 7.5),
+            kind: PickupKind::Medkit,
+        },
+        Pickup {
+            pos: Vec2::new(2.5, 7.5),
+            kind: PickupKind::Ammo,
+        },
+    ];
+    for _ in 0..60 {
+        game.tick(
+            1.0 / 120.0,
+            Controls {
+                forward: 1.0,
+                ..Controls::default()
+            },
+        );
+    }
+    assert!(game.break_time > 0.0);
+    assert_eq!(game.wave, 1);
+    assert!(game.pickups.is_empty());
+    assert_eq!(game.player.hp, 80);
+    assert_eq!(game.player.reserve, reserve + 16);
+    assert_eq!(game.enemies[0].corpse, 0.0);
+    assert_eq!(game.enemies[0].flash, 0.0);
+}
+
+#[test]
+fn shotgun_hits_follow_the_visible_body() {
+    // Up close, the crosshair is on a brute's shoulder well off its centre.
+    let mut game = arena();
+    game.player.pos = Vec2::new(1.5, 7.5);
+    game.player.angle = 0.0;
+    game.enemies = vec![enemy(Vec2::new(3.0, 8.1), Kind::Brute)];
+    assert!(game.shoot());
+    assert_eq!(game.enemies[0].hp, Kind::Brute.health() - 72);
+
+    // At range, only the pellet spread beyond the body still connects.
+    let damage_at = |lateral: f32| {
+        let mut game = arena();
+        game.player.pos = Vec2::new(1.5, 11.5);
+        game.player.angle = 0.0;
+        game.enemies = vec![enemy(Vec2::new(11.5, 11.5 + lateral), Kind::Grunt)];
+        game.shoot();
+        Kind::Grunt.health() - game.enemies[0].hp
+    };
+    let centred = damage_at(0.0);
+    let fringe = damage_at(1.2);
+    assert!(centred > fringe && fringe > 0, "{centred} {fringe}");
+    assert_eq!(damage_at(1.8), 0);
+}
+
+#[test]
+fn enemies_out_of_sight_separate_even_from_the_same_spot() {
+    let mut game = arena();
+    game.player.pos = Vec2::new(4.5, 3.5);
+    game.enemies = vec![
+        enemy(Vec2::new(7.5, 3.5), Kind::Grunt),
+        enemy(Vec2::new(7.5, 3.5), Kind::Grunt),
+    ];
+    assert!(!world::visible(game.enemies[0].pos, game.player.pos));
+    let routes = world::routes(game.player.pos);
+    let steps = |pos: Vec2| {
+        let (x, y) = pos.cell();
+        routes[y as usize * world::WIDTH + x as usize]
+    };
+    let start = steps(game.enemies[0].pos);
+    advance(&mut game, 1.5);
+    assert!((game.enemies[0].pos - game.enemies[1].pos).length() > 0.4);
+    // Separation must not hold either enemy at a cell centre it needs to leave.
+    for e in &game.enemies {
+        assert!(world::fits(e.pos, 0.18));
+        assert!(steps(e.pos) < start);
+    }
+}
+
+#[test]
 fn wall_blocks_shotgun() {
     let mut game = arena();
     game.player.pos = Vec2::new(4.5, 3.5);

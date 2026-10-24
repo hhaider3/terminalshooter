@@ -2,7 +2,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use terminalshooter::{
-    game::{Game, Phase},
+    game::{FINAL_WAVE, Game, Phase},
     input::Input,
     render::{self, BG, ColorMode, Frame, GREEN, Stats, TerminalRenderer, WHITE},
     world::Vec2,
@@ -412,6 +412,24 @@ fn title_motion_does_not_start_and_restart_resets_game() {
     assert_eq!(game.player.hp, 100);
     assert_eq!(game.wave, 1);
     assert!(!game.mouse);
+}
+
+#[test]
+fn hud_and_end_screen_count_waves_up_to_final_wave() {
+    let mut game = Game::new(1);
+    game.start();
+    let progress = format!("WAVE 1/{FINAL_WAVE}");
+    assert!(
+        render::draw(&game, 120, 36, Stats::default())
+            .plain()
+            .contains(&progress)
+    );
+    game.phase = Phase::Lost;
+    assert!(
+        render::draw(&game, 120, 36, Stats::default())
+            .plain()
+            .contains(&progress)
+    );
 }
 
 #[test]

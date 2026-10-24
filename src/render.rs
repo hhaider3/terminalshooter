@@ -1,4 +1,4 @@
-use crate::game::{Game, Kind, MAGAZINE, Phase, PickupKind, RELOAD_TIME};
+use crate::game::{FINAL_WAVE, Game, Kind, MAGAZINE, Phase, PickupKind, RELOAD_TIME};
 use crate::world::{self, Vec2};
 use std::fmt::Write;
 
@@ -298,16 +298,13 @@ fn scene(frame: &mut Frame, game: &Game) {
         if size < 2 {
             continue;
         }
-        let aspect = if pickup {
-            0.5
+        // Project width like the walls so the sprite matches the shotgun's hit test.
+        let half_width = if pickup {
+            0.225
         } else {
-            match game.enemies[index].kind {
-                Kind::Brute => 0.48,
-                Kind::Runner => 0.32,
-                Kind::Grunt => 0.40,
-            }
+            game.enemies[index].kind.half_width()
         };
-        let half = (size as f32 * aspect).max(1.0) as i32;
+        let half = (half_width * w as f32 * 0.5 / (depth * plane_scale)).max(1.0) as i32;
         let bottom = (horizon + h as f32 / depth / 2.0) as i32;
         let top = bottom - size;
         // Contact shadows anchor sprites to the floor, with wall occlusion.
@@ -543,7 +540,7 @@ fn hud(frame: &mut Frame, game: &Game, stats: Stats) {
         if p.hp > 30 { GREEN } else { RED },
     );
     let mut objective = format!(
-        "WAVE {}/5  LEFT {}  SCORE {}",
+        "WAVE {}/{FINAL_WAVE}  LEFT {}  SCORE {}",
         game.wave,
         game.alive(),
         game.score
@@ -728,7 +725,7 @@ fn menu(frame: &mut Frame, game: &Game, stats: Stats) {
             );
             frame.center(
                 frame.height / 2,
-                &format!("WAVE {}/5   TIME {:.0}s", game.wave, game.time),
+                &format!("WAVE {}/{FINAL_WAVE}   TIME {:.0}s", game.wave, game.time),
                 DIM,
             );
             frame.center(

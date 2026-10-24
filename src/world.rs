@@ -221,10 +221,12 @@ pub fn waypoint(pos: Vec2, field: &[u16; CELLS]) -> Option<Vec2> {
         .into_iter()
         .filter(|&(nx, ny)| !wall(nx, ny) && field[ny as usize * WIDTH + nx as usize] < current)
         .min_by_key(|&(nx, ny)| field[ny as usize * WIDTH + nx as usize])?;
-    if (next.0 != x && (pos.y - y as f32 - 0.5).abs() > 0.06)
-        || (next.1 != y && (pos.x - x as f32 - 0.5).abs() > 0.06)
-    {
-        Some(Vec2::new(x as f32 + 0.5, y as f32 + 0.5))
+    // Recentre only across the direction of travel. Pulling back to the cell
+    // centre would undo progress whenever separation nudges an enemy off-axis.
+    if next.0 != x && (pos.y - y as f32 - 0.5).abs() > 0.06 {
+        Some(Vec2::new(pos.x, y as f32 + 0.5))
+    } else if next.1 != y && (pos.x - x as f32 - 0.5).abs() > 0.06 {
+        Some(Vec2::new(x as f32 + 0.5, pos.y))
     } else {
         Some(Vec2::new(next.0 as f32 + 0.5, next.1 as f32 + 0.5))
     }
