@@ -134,7 +134,7 @@ launch and does not change the saved mouse-look preference.
 
 The Rust version uses [Crossterm](https://docs.rs/crossterm/0.29.0/crossterm/event/index.html)
 for key, mouse, focus, and resize events. It does **not** attempt desktop pointer
-locking. The experimental pointer-lock helper has also been removed from Python.
+locking.
 Mouse movement stops at window edges, so resting the pointer in the outer columns
 (5% of the window width each side, at least 2) keeps turning, faster nearer the
 edge; move it back inward to stop. Q/E can always rotate the camera. `L` toggles
@@ -259,6 +259,5 @@ Terminal GUI or physically move the pointer.
 | `src/profile.rs` | Best score and control preferences saved between launches |
 | `tests/` | Gameplay, input/rendering, and executable PTY checks |
 
-The existing `fps_hd.py` and `test_fps.py` remain available
-as the previous Python version. They are not used by the Rust game. Its historical
-documentation is in [docs/PYTHON_VERSION.md](docs/PYTHON_VERSION.md).
+The original Python version, with its history, now lives in
+[hhaider3/terminalshooter-python](https://github.com/hhaider3/terminalshooter-python).
